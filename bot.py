@@ -9,6 +9,7 @@ import requests
 import time
 import socket
 import concurrent.futures
+import random
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -28,12 +29,12 @@ MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
 GEOIP_API = "http://ip-api.com/json/"
 HEADERS = {'User-Agent': 'Telegram V2Ray Config Bot/1.0'}
-MAX_WORKERS = 10  # Увеличено для лучшей производительности
-CHUNK_SIZE = 500  # Изменено на 500 согласно плану
-MAX_CONFIGS_PER_USER = 50000  # Увеличено до 50 000 конфигов
+MAX_WORKERS = 10
+CHUNK_SIZE = 500
+MAX_CONFIGS_PER_USER = 50000
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 # Состояния диалога
-WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, SENDING_CONFIGS, PROCESSING = range(5)  # Добавлено состояние PROCESSING
+WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, SENDING_CONFIGS, PROCESSING = range(5)
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,6 +51,13 @@ if NEURAL_API_KEY:
     logger.info("Нейросеть DeepSeek-R1 инициализирована")
 else:
     logger.warning("NEURAL_API_KEY не установлен, функции нейросети отключены")
+
+# Кэши для оптимизации
+ip_cache = {}  # Кэш для геолокации IP
+neural_cache = {}  # Кэш для нейросетевых запросов
+last_neural_request_time = 0  # Для контроля rate limit
+NEURAL_REQUEST_DELAY = 0.3  # Задержка в секундах между запросами к нейросети
+NEURAL_USAGE_RATE = 0.15  # Используем нейросеть только для 15% конфигов
 
 def normalize_text(text: str) -> str:
     text = text.lower().strip()
@@ -128,6 +136,19 @@ async def neural_normalize_country(text: str) -> str:
         "Если не уверен, верни None."
     )
     try:
+        # Проверяем кэш
+        if text in neural_cache:
+            return neural_cache[text]
+            
+        global last_neural_request_time
+        current_time = time.time()
+        time_since_last_request = current_time - last_neural_request_time
+        
+        if time_since_last_request < NEURAL_REQUEST_DELAY:
+            await asyncio.sleep(NEURAL_REQUEST_DELAY - time_since_last_request)
+        
+        last_neural_request_time = time.time()
+
         response = neural_client.chat.completions.create(
             model=NEURAL_MODEL,
             messages=[
@@ -141,17 +162,36 @@ async def neural_normalize_country(text: str) -> str:
         if result and len(result) < 50:
             try:
                 country = pycountry.countries.search_fuzzy(result)[0]
+                neural_cache[text] = country.name.lower()
                 return country.name.lower()
             except:
+                neural_cache[text] = result
                 return result
+        neural_cache[text] = None
         return None
     except Exception as e:
         logger.error(f"Ошибка нейросети: {e}")
+        neural_cache[text] = None
         return None
 
 async def neural_detect_country(config: str) -> str:
     if not neural_client:
         return None
+    config_hash = hash(config[:200])  # Используем хеш для кэширования
+    
+    # Проверяем кэш
+    if config_hash in neural_cache:
+        return neural_cache[config_hash]
+    
+    global last_neural_request_time
+    current_time = time.time()
+    time_since_last_request = current_time - last_neural_request_time
+    
+    if time_since_last_request < NEURAL_REQUEST_DELAY:
+        await asyncio.sleep(NEURAL_REQUEST_DELAY - time_since_last_request)
+    
+    last_neural_request_time = time.time()
+
     system_prompt = (
         "Ты эксперт по V2Ray конфигурациям. Определи, для какой страны предназначен этот конфиг. "
         "Ответь только названием страны на английском в нижнем регистре или 'unknown', если не удалось определить."
@@ -161,18 +201,21 @@ async def neural_detect_country(config: str) -> str:
             model=NEURAL_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": config}
+                {"role": "user", "content": config[:500]}  # Ограничиваем длину конфига
             ],
             max_tokens=20,
             temperature=0.1
         )
         result = response.choices[0].message.content.strip().lower()
         result = re.sub(r'[^a-z\s]', '', result)
-        if 'unknown' in result:
+        if 'unknown' in result or not result:
+            neural_cache[config_hash] = None
             return None
+        neural_cache[config_hash] = result
         return result
     except Exception as e:
         logger.error(f"Ошибка нейросети при определении страны конфига: {e}")
+        neural_cache[config_hash] = None
         return None
 
 async def check_configs(update: Update, context: CallbackContext):
@@ -574,7 +617,7 @@ async def send_configs(update: Update, context: CallbackContext):
     
     if current_index < len(matched_configs) and not context.user_data.get('stop_sending', False):
         # Продолжаем отправку оставшихся конфигов
-        time.sleep(0.5)  # Небольшая пауза между отправками
+        time.sleep(0.3)  # Небольшая пауза между отправками
         await send_configs(update, context)
     else:
         if not context.user_data.get('stop_sending', False):
@@ -586,7 +629,11 @@ async def send_configs(update: Update, context: CallbackContext):
 
 def is_config_relevant(config: str, target_country: str, country_codes: list, flag_pattern: str = None) -> bool:
     """Проверяет, является ли конфиг потенциально подходящим для указанной страны"""
-    config = config.lower()
+    config = config.lower().strip()
+    
+    # Пропускаем пустые строки
+    if not config:
+        return False
     
     # Проверка по флагу (если он указан)
     if flag_pattern and re.search(flag_pattern, config, re.IGNORECASE):
@@ -610,6 +657,11 @@ def is_config_relevant(config: str, target_country: str, country_codes: list, fl
         # Проверяем, не является ли IP приватным
         if not re.match(r'(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)', ip):
             return True
+    
+    # Дополнительная проверка: наличие страны в названии конфига
+    country_name = target_country.replace(' ', '|')
+    if re.search(rf'\b({country_name})\b', config):
+        return True
     
     return False
 
@@ -654,8 +706,8 @@ def validate_config(config: str, target_country: str) -> tuple:
         if not validate_config_structure(config):
             return (config, False)
         
-        # Если нейросеть доступна и конфиг не слишком длинный, используем её для проверки
-        if neural_client and len(config) < 1000:
+        # Используем нейросеть только для небольшого процента конфигов
+        if neural_client and len(config) < 1000 and random.random() < NEURAL_USAGE_RATE:
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -711,21 +763,54 @@ def resolve_dns(host: str) -> str:
         return None
 
 def geolocate_ip(ip: str) -> str:
-    """Геолоцирует IP-адрес через API"""
-    try:
-        # Пропускаем приватные IP-адреса
-        if re.match(r'(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)', ip):
-            return None
-        
-        # Запрос к API
-        response = requests.get(f"{GEOIP_API}{ip}", headers=HEADERS, timeout=5)
-        data = response.json()
-        
-        if data.get('status') == 'success':
-            return data.get('country', '').lower()
-    except Exception as e:
-        logger.error(f"Ошибка геолокации для {ip}: {e}")
+    """Геолоцирует IP-адрес через API с повторными попытками и кэшированием"""
+    # Проверяем кэш
+    if ip in ip_cache:
+        return ip_cache[ip]
     
+    # Пропускаем приватные IP-адреса
+    if re.match(r'(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)', ip):
+        ip_cache[ip] = None
+        return None
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Запрос к API
+            response = requests.get(f"{GEOIP_API}{ip}", headers=HEADERS, timeout=5)
+            
+            # Проверяем, что ответ содержит валидный JSON
+            try:
+                data = response.json()
+            except ValueError:
+                logger.warning(f"Некорректный JSON от гео-API для {ip}: {response.text}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))  # Увеличиваем задержку с каждой попыткой
+                    continue
+                ip_cache[ip] = None
+                return None
+            
+            if data.get('status') == 'success':
+                country = data.get('country', '').lower()
+                ip_cache[ip] = country
+                return country
+            else:
+                logger.warning(f"Гео-API вернул статус не success для {ip}: {data}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                ip_cache[ip] = None
+                return None
+                
+        except Exception as e:
+            logger.error(f"Ошибка геолокации для {ip} (попытка {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            ip_cache[ip] = None
+            return None
+    
+    ip_cache[ip] = None
     return None
 
 def get_country_flag(country_name: str) -> str:
@@ -816,7 +901,7 @@ def detect_by_keywords(config: str, target_country: str) -> bool:
         'belarus': [r'belarus', r'minsk', r'\.by\b', r'白俄罗斯', r'明斯克'],
         'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'印度尼西亚', r'雅加达'],
         'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'马来西亚', r'吉隆坡'],
-        'philippines': [r'philippines', r'manila', r'\.ph\b', r'菲律宾', r'马尼拉'],
+        'philippines': [r'philippines', r'manila', r'\.ph\b', r'菲律宾', r'马尼ла'],
         'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'越南', r'河内'],
         'thailand': [r'thailand', r'bangkok', r'\.th\b', r'泰国', r'曼谷'],
         'czech republic': [r'czech', r'prague', r'\.cz\b', r'捷克', r'布拉格'],
