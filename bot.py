@@ -11,7 +11,7 @@ import socket
 import concurrent.futures
 import asyncio
 import random
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -32,12 +32,16 @@ MAX_MSG_LENGTH = 4000
 GEOIP_API = "http://ip-api.com/json/"
 HEADERS = {'User-Agent': 'Telegram V2Ray Config Bot/3.0'}
 MAX_WORKERS = 10
-CHUNK_SIZE = 500  # Увеличен размер чанка
+CHUNK_SIZE = 500
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
-NEURAL_TIMEOUT = 15  # Таймаут для нейросети
+NEURAL_TIMEOUT = 15
+GEOIP_TIMEOUT = 10
+MAX_RETRIES = 3
+MAX_CONFIGS_PER_REQUEST = 50  # Лимит конфигов на запрос
 
 # Состояния диалога
-START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, WAITING_NUMBER, SENDING_CONFIGS, PROCESSING_STRICT = range(7)
+(START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, 
+ WAITING_NUMBER, SENDING_CONFIGS, PROCESSING_STRICT) = range(7)
 
 # Настройка логирования
 logging.basicConfig(
@@ -59,13 +63,15 @@ else:
     logger.warning("NEURAL_API_KEY не установлен, функции нейросети отключены")
 
 # Кэширование
-country_cache = {}
-geo_cache = {}
-dns_cache = {}
-config_cache = {}
-instruction_cache = {}
-country_normalization_cache = {}
-neural_improvement_cache = {}
+cache = {
+    'country': {},
+    'geo': {},
+    'dns': {},
+    'config': {},
+    'instruction': {},
+    'country_normalization': {},
+    'neural_improvement': {}
+}
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -73,7 +79,7 @@ def clear_temporary_data(context: CallbackContext):
         'matched_configs', 'current_index', 'stop_sending', 
         'strict_in_progress', 'improved_search', 'country_request', 
         'country', 'target_country', 'country_codes', 'search_mode',
-        'file_path', 'file_paths'
+        'file_path', 'file_paths', 'total_configs'
     ]
     for key in keys_to_clear:
         if key in context.user_data:
@@ -83,9 +89,8 @@ def normalize_text(text: str) -> str:
     """Нормализация текста страны для поиска"""
     text = text.lower().strip()
     
-    # Проверка кэша нормализации
-    if text in country_normalization_cache:
-        return country_normalization_cache[text]
+    if text in cache['country_normalization']:
+        return cache['country_normalization'][text]
     
     ru_en_map = {
         "россия": "russia", "русский": "russia", "рф": "russia", "ру": "russia",
@@ -149,6 +154,8 @@ def normalize_text(text: str) -> str:
     }
     for key, value in ru_en_map.items():
         text = text.replace(key, value)
+    
+    cache['country_normalization'][text] = text
     return text
 
 async def neural_normalize_country(text: str) -> str:
@@ -156,9 +163,8 @@ async def neural_normalize_country(text: str) -> str:
     if not neural_client:
         return None
     
-    # Проверка кэша
-    if text in country_cache:
-        return country_cache[text]
+    if text in cache['country']:
+        return cache['country'][text]
     
     system_prompt = (
         "Определи страну по тексту. Верни только английское название страны в нижнем регистре. "
@@ -180,7 +186,7 @@ async def neural_normalize_country(text: str) -> str:
             try:
                 country = pycountry.countries.search_fuzzy(result)[0]
                 country_name = country.name.lower()
-                country_cache[text] = country_name  # Кэшируем результат
+                cache['country'][text] = country_name
                 return country_name
             except:
                 return result
@@ -194,13 +200,12 @@ async def neural_detect_country(config: str) -> str:
     if not neural_client:
         return None
     
-    # Проверка кэша
     config_hash = hash(config)
-    if config_hash in config_cache:
-        return config_cache[config_hash]
+    if config_hash in cache['config']:
+        return cache['config'][config_hash]
     
     system_prompt = (
-        "Определи страну для этого V2Ray конфига. Ответь только названием страны на английском в нижнем регистре "
+        "Определи страну для этого VPN конфига. Ответь только названием страны на английском в нижнем регистре "
         "или 'unknown', если не удалось определить. Учитывай явные указания страны в названии сервера или комментариях."
     )
     try:
@@ -218,7 +223,7 @@ async def neural_detect_country(config: str) -> str:
         if 'unknown' in result:
             return None
         
-        config_cache[config_hash] = result  # Кэшируем результат
+        cache['config'][config_hash] = result
         return result
     except Exception as e:
         logger.error(f"Ошибка нейросети при определении страны конфига: {e}")
@@ -227,14 +232,13 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны ( нейросеть отключена)"
+        return "Инструкции недоступны (нейросеть отключена)"
     
-    # Проверка кэша
-    if country in instruction_cache:
-        return instruction_cache[country]
+    if country in cache['instruction']:
+        return cache['instruction'][country]
     
     system_prompt = (
-        f"Ты эксперт по VPN. Сгенерируй краткую инструкцию по использованию V2Ray для пользователей из {country}. "
+        f"Ты эксперт по VPN. Сгенерируй краткую инструкцию по использованию VPN для пользователей из {country}. "
         "Инструкция должна быть на русском, понятной и содержать основные шаги. "
         "Максимум 300 символов."
     )
@@ -249,7 +253,7 @@ async def generate_country_instructions(country: str) -> str:
             temperature=0.7
         )
         instructions = response.choices[0].message.content.strip()
-        instruction_cache[country] = instructions  # Кэшируем результат
+        cache['instruction'][country] = instructions
         return instructions
     except Exception as e:
         logger.error(f"Ошибка генерации инструкций: {e}")
@@ -260,12 +264,11 @@ async def neural_improve_search(country: str) -> dict:
     if not neural_client:
         return None
     
-    # Проверка кэша
-    if country in neural_improvement_cache:
-        return neural_improvement_cache[country]
+    if country in cache['neural_improvement']:
+        return cache['neural_improvement'][country]
     
     system_prompt = (
-        "Ты — поисковый агент для бота V2Ray. Сгенерируй улучшенные инструкции для поиска конфигов в указанной стране. "
+        "Ты — поисковый агент для VPN бота. Сгенерируй улучшенные инструкции для поиска конфигов в указанной стране. "
         "Верни JSON объект с полями: "
         "'keywords' (дополнительные ключевые слова для поиска), "
         "'patterns' (регулярные выражения для идентификации страны в конфигах). "
@@ -284,7 +287,7 @@ async def neural_improve_search(country: str) -> dict:
         )
         result = response.choices[0].message.content.strip()
         improvement = json.loads(result)
-        neural_improvement_cache[country] = improvement  # Кэшируем результат
+        cache['neural_improvement'][country] = improvement
         return improvement
     except Exception as e:
         logger.error(f"Ошибка улучшения поиска: {e}")
@@ -295,7 +298,6 @@ async def start_check(update: Update, context: CallbackContext):
     clear_temporary_data(context)
     user_id = update.message.from_user.id
     
-    # Проверяем наличие истории
     if 'configs' in context.user_data and context.user_data['configs'] and 'last_country' in context.user_data:
         keyboard = [
             [InlineKeyboardButton("🌍 Использовать текущий файл", callback_data='use_current_file')],
@@ -310,7 +312,7 @@ async def start_check(update: Update, context: CallbackContext):
         )
         return START
     else:
-        await update.message.reply_text("📎 Пожалуйста, загрузите текстовый файл с конфигурациями V2Ray (до 15 МБ).")
+        await update.message.reply_text("📎 Пожалуйста, загрузите текстовый файл с конфигурациями VPN (до 15 МБ).")
         return WAITING_FILE
 
 async def handle_document(update: Update, context: CallbackContext):
@@ -318,19 +320,16 @@ async def handle_document(update: Update, context: CallbackContext):
     user = update.message.from_user
     document = update.message.document
     
-    # Проверка типа файла
     if not document.mime_type.startswith('text/'):
         await update.message.reply_text("❌ Пожалуйста, загрузите текстовый файл.")
         return ConversationHandler.END
     
-    # Проверка размера файла
     if document.file_size > MAX_FILE_SIZE:
         await update.message.reply_text(
             f"❌ Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE//1024//1024}MB"
         )
         return ConversationHandler.END
     
-    # Скачивание файла
     file = await context.bot.get_file(document.file_id)
     with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
         await file.download_to_memory(tmp_file)
@@ -338,17 +337,24 @@ async def handle_document(update: Update, context: CallbackContext):
         content = tmp_file.read().decode('utf-8', errors='replace')
         lines = content.splitlines()
         configs = [line.strip() for line in lines if line.strip()]
+        
+        # Ограничение количества конфигов
+        if len(configs) > MAX_CONFIGS_PER_REQUEST:
+            configs = configs[:MAX_CONFIGS_PER_REQUEST]
+            await update.message.reply_text(
+                f"⚠️ Файл содержит слишком много конфигов. Обработано первых {MAX_CONFIGS_PER_REQUEST}."
+            )
+        
         context.user_data['configs'] = configs
         context.user_data['file_name'] = document.file_name
+        context.user_data['total_configs'] = len(configs)
         tmp_file_path = tmp_file.name
     
-    # Удаление временного файла
     if os.path.exists(tmp_file_path):
         os.unlink(tmp_file_path)
     
     logger.info(f"Пользователь {user.id} загрузил файл: {document.file_name} ({len(configs)} конфигов)")
     
-    # Клавиатура действий
     keyboard = [
         [InlineKeyboardButton("📤 Загрузить еще файл", callback_data='add_file')],
         [InlineKeyboardButton("🌍 Указать страну", callback_data='set_country')]
@@ -385,13 +391,13 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
     elif query.data == 'fast_mode':
         context.user_data['search_mode'] = 'fast'
         await query.edit_message_text("⚡ Запускаю быстрый поиск...")
-        await fast_search(update, context)  # Прямой вызов
+        await fast_search(update, context)
         return WAITING_NUMBER
     
     elif query.data == 'strict_mode':
         context.user_data['search_mode'] = 'strict'
         await query.edit_message_text("🔍 Запускаю строгий поиск...")
-        await strict_search(update, context)  # Прямой вызов
+        await strict_search(update, context)
         return WAITING_NUMBER
     
     elif query.data == 'stop_sending':
@@ -424,7 +430,6 @@ async def handle_country(update: Update, context: CallbackContext):
     country = None
     found_by_neural = False
     
-    # Поиск страны через pycountry
     try:
         countries = pycountry.countries.search_fuzzy(normalized_text)
         country = countries[0]
@@ -438,19 +443,15 @@ async def handle_country(update: Update, context: CallbackContext):
                 country = countries[0]
                 found_by_neural = True
                 logger.info(f"Нейросеть определила страну: {country.name}")
-                
-                # Сохраняем в кэш нормализации
-                country_normalization_cache[country_request] = neural_country
+                cache['country_normalization'][country_request] = neural_country
                 if normalized_text != country_request:
-                    country_normalization_cache[normalized_text] = neural_country
+                    cache['country_normalization'][normalized_text] = neural_country
             except:
                 logger.warning("Нейросеть не смогла определить страну")
     
-    # Если страна не найдена
     if not country:
         logger.warning(f"Страна не распознана: {country_request}")
         
-        # Попытка улучшить поиск через нейросеть
         if neural_client:
             try:
                 improved_search = await neural_improve_search(country_request)
@@ -458,13 +459,10 @@ async def handle_country(update: Update, context: CallbackContext):
                     keywords = improved_search.get('keywords', [])
                     patterns = improved_search.get('patterns', [])
                     logger.info(f"Улучшенный поиск: keywords={keywords}, patterns={patterns}")
-                    
-                    # Сохраняем улучшения для будущих запросов
                     context.user_data['improved_search'] = {
                         'keywords': keywords,
                         'patterns': patterns
                     }
-                    
                     await update.message.reply_text(
                         f"🔍 Нейросеть улучшила поиск для '{country_request}'. Попробуйте снова."
                     )
@@ -475,12 +473,10 @@ async def handle_country(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Страна не распознана. Пожалуйста, уточните название.")
         return WAITING_COUNTRY
 
-    # Сохраняем данные о стране
     context.user_data['country'] = country.name
     context.user_data['target_country'] = country.name.lower()
     context.user_data['country_codes'] = [c.alpha_2.lower() for c in countries] + [country.alpha_2.lower()]
     
-    # Клавиатура выбора режима
     keyboard = [
         [
             InlineKeyboardButton("⚡ Быстрый поиск", callback_data='fast_mode'),
@@ -489,14 +485,13 @@ async def handle_country(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Генерация инструкций, если их нет в кэше
-    if country.name.lower() not in instruction_cache:
+    if country.name.lower() not in cache['instruction']:
         instructions = await generate_country_instructions(country.name)
-        instruction_cache[country.name.lower()] = instructions
+        cache['instruction'][country.name.lower()] = instructions
     
     await update.message.reply_text(
         f"🌍 Вы выбрали страну: {country.name}\n"
-        f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция генерируется...')}\n\n"
+        f"ℹ️ {cache['instruction'].get(country.name.lower(), 'Инструкция генерируется...')}\n\n"
         "Выберите режим поиска:",
         reply_markup=reply_markup
     )
@@ -516,12 +511,10 @@ async def fast_search(update: Update, context: CallbackContext):
     matched_configs = []
     progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Начинаю быстрый поиск...")
     
-    # Применяем улучшения поиска если есть
     improved_search = context.user_data.get('improved_search', {})
     additional_keywords = improved_search.get('keywords', [])
     additional_patterns = improved_search.get('patterns', [])
     
-    # Поиск релевантных конфигов
     total_configs = len(configs)
     for i, config in enumerate(configs):
         try:
@@ -536,7 +529,6 @@ async def fast_search(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"Ошибка проверки конфига #{i}: {e}")
         
-        # Обновление прогресса каждые 500 конфигов
         if i % 500 == 0 or i == total_configs - 1:
             progress = min((i + 1) / total_configs * 100, 100)
             progress_bar = create_progress_bar(progress)
@@ -546,7 +538,6 @@ async def fast_search(update: Update, context: CallbackContext):
                 text=f"🔎 Быстрый поиск: {progress_bar} {progress:.1f}%\nОбработано: {i+1}/{total_configs}"
             )
     
-    # Результаты поиска
     logger.info(f"Найдено {len(matched_configs)} конфигов для {context.user_data['country']}, обработка заняла {time.time()-start_time:.2f} сек")
     
     if not matched_configs:
@@ -557,7 +548,6 @@ async def fast_search(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
     
-    # Сохраняем результаты
     context.user_data['matched_configs'] = matched_configs
     
     await context.bot.edit_message_text(
@@ -582,17 +572,14 @@ async def strict_search(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
         return ConversationHandler.END
     
-    # Этап 1: предварительная фильтрация
     start_time = time.time()
     prelim_configs = []
     progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Этап 1: предварительная фильтрация...")
     
-    # Применяем улучшения поиска если есть
     improved_search = context.user_data.get('improved_search', {})
     additional_keywords = improved_search.get('keywords', [])
     additional_patterns = improved_search.get('patterns', [])
     
-    # Поиск релевантных конфигов
     total_configs = len(configs)
     for i, config in enumerate(configs):
         try:
@@ -607,7 +594,6 @@ async def strict_search(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"Ошибка проверки конфига #{i}: {e}")
         
-        # Обновление прогресса каждые 500 конфигов
         if i % 500 == 0 or i == total_configs - 1:
             progress = min((i + 1) / total_configs * 100, 100)
             progress_bar = create_progress_bar(progress)
@@ -627,9 +613,7 @@ async def strict_search(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
     
-    # Этап 2: строгая проверка через геолокацию IP
     total_chunks = (len(prelim_configs) + CHUNK_SIZE - 1) // CHUNK_SIZE
-    # Создаем клавиатуру с кнопкой остановки
     stop_keyboard = [[InlineKeyboardButton("⏹ Остановить строгий поиск", callback_data='stop_strict_search')]]
     stop_reply_markup = InlineKeyboardMarkup(stop_keyboard)
     
@@ -643,9 +627,8 @@ async def strict_search(update: Update, context: CallbackContext):
     
     start_time = time.time()
     strict_matched_configs = []
-    context.user_data['strict_in_progress'] = True  # Флаг, что строгий поиск в процессе
+    context.user_data['strict_in_progress'] = True
     
-    # Обрабатываем чанки конфигов
     for chunk_idx in range(total_chunks):
         if context.user_data.get('stop_strict_search'):
             break
@@ -655,11 +638,9 @@ async def strict_search(update: Update, context: CallbackContext):
         chunk = prelim_configs[start_idx:end_idx]
         chunk_start_time = time.time()
         
-        # Проверяем конфиги в чанке
         valid_configs = validate_configs_by_geolocation(chunk, target_country)
         strict_matched_configs.extend(valid_configs)
         
-        # Обновляем сообщение прогресса
         chunk_time = time.time() - chunk_start_time
         chunk_progress = min((chunk_idx + 1) / total_chunks * 100, 100)
         progress_bar = create_progress_bar(chunk_progress)
@@ -669,18 +650,16 @@ async def strict_search(update: Update, context: CallbackContext):
             text=f"🌐 Этап 2: {progress_bar} {chunk_progress:.1f}%\n"
                  f"Обработан сектор: {chunk_idx+1}/{total_chunks}\n"
                  f"Найдено: {len(valid_configs)} | Всего: {len(strict_matched_configs)}\n"
-                 f"Скорость: {len(chunk)/chunk_time:.1f} конфиг/сек",
+                 f"Скорость: {len(chunk)/max(chunk_time, 0.1):.1f} конфиг/сек",
             reply_markup=stop_reply_markup
         )
     
-    # Убираем флаг
     context.user_data['strict_in_progress'] = False
     
     total_time = time.time() - start_time
     logger.info(f"Строгая проверка завершена: найдено {len(strict_matched_configs)} конфигов, заняло {total_time:.2f} сек")
     
     if context.user_data.get('stop_strict_search'):
-        # Удаляем кнопку остановки, редактируя сообщение
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
@@ -697,7 +676,6 @@ async def strict_search(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="❌ Конфигурации не найдены.")
         return ConversationHandler.END
     
-    # Сохраняем все найденные конфиги
     context.user_data['matched_configs'] = strict_matched_configs
     
     await context.bot.send_message(
@@ -721,11 +699,9 @@ async def handle_number(update: Update, context: CallbackContext):
         if num > total:
             num = total
         
-        # Перемешиваем конфиги для случайной выборки
         random.shuffle(matched_configs)
         selected_configs = matched_configs[:num]
         
-        # Сохраняем выбранные конфиги
         context.user_data['matched_configs'] = selected_configs
         context.user_data['current_index'] = 0
         context.user_data['stop_sending'] = False
@@ -752,29 +728,22 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     
-    # Формируем заголовок
     header = f"Конфиги для {country_name}:\n\n"
-    configs_text = ""
+    current_message = header
     messages = []
     
-    # Собираем конфиги в сообщения с учетом лимита
     for config in matched_configs:
-        config_line = f"{config}\n"
+        config_line = f"{config}\n\n"
         
-        # Если добавление конфига превысит лимит
-        if len(header) + len(configs_text) + len(config_line) > MAX_MSG_LENGTH:
-            # Сохраняем текущее сообщение
-            messages.append(header + configs_text)
-            # Начинаем новое сообщение
-            configs_text = ""
-        
-        configs_text += config_line
+        if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
+            messages.append(current_message)
+            current_message = config_line
+        else:
+            current_message += config_line
     
-    # Добавляем последнее сообщение
-    if configs_text:
-        messages.append(header + configs_text)
+    if current_message:
+        messages.append(current_message)
     
-    # Отправляем все сообщения
     total_messages = len(messages)
     for i, message in enumerate(messages):
         if context.user_data.get('stop_sending'):
@@ -782,9 +751,8 @@ async def send_configs(update: Update, context: CallbackContext):
             return ConversationHandler.END
         
         try:
-            # Добавляем прогресс в последнее сообщение
             if i == total_messages - 1:
-                progress = f"\n\n⌛ Прогресс: {i+1}/{total_messages} сообщений"
+                progress = f"\n\n⌛ Отправлено {i+1}/{total_messages} сообщений"
                 if len(message) + len(progress) <= MAX_MSG_LENGTH:
                     message += progress
             
@@ -793,13 +761,12 @@ async def send_configs(update: Update, context: CallbackContext):
                 text=f"<pre>{message}</pre>",
                 parse_mode='HTML'
             )
-            await asyncio.sleep(0.3)  # Задержка для избежания флуда
+            await asyncio.sleep(0.3)
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения: {e}")
     
     await context.bot.send_message(chat_id=user_id, text="✅ Все конфиги отправлены.")
     
-    # Сохраняем историю
     context.user_data['last_country'] = context.user_data['country']
     clear_temporary_data(context)
     return ConversationHandler.END
@@ -818,11 +785,9 @@ def is_config_relevant(
     additional_patterns: list = []
 ) -> bool:
     """Проверка релевантности конфига"""
-    # Проверка по ключевым словам
     if detect_by_keywords(config, target_country, additional_keywords, additional_patterns):
         return True
     
-    # Проверка по домену
     domain = extract_domain(config)
     if domain:
         tld = domain.split('.')[-1].lower()
@@ -835,12 +800,9 @@ def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
     """Проверка конфигов по геолокации IP"""
     valid_configs = []
     
-    # Используем ThreadPoolExecutor для параллельной обработки
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Создаем задачи для каждого конфига
         futures = {executor.submit(validate_config_by_geolocation, config, target_country): config for config in configs}
         
-        # Обрабатываем результаты по мере их готовности
         for future in concurrent.futures.as_completed(futures):
             config = futures[future]
             try:
@@ -854,26 +816,21 @@ def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
 def validate_config_by_geolocation(config: str, target_country: str) -> bool:
     """Проверка конфига по геолокации IP"""
     try:
-        # Пропускаем невалидные конфиги
         if not validate_config_structure(config):
             return False
         
-        # Извлекаем хост из конфига
         host = extract_host(config)
         if not host:
             return False
         
-        # Разрешаем DNS (если это домен)
         ip = resolve_dns(host)
         if not ip:
             return False
         
-        # Получаем страну по IP
         country = geolocate_ip(ip)
         if not country:
             return False
         
-        # Сравниваем страну с целевой
         return country.lower() == target_country.lower()
     
     except Exception as e:
@@ -882,6 +839,7 @@ def validate_config_by_geolocation(config: str, target_country: str) -> bool:
 
 def validate_config_structure(config: str) -> bool:
     """Проверка структуры конфига"""
+    # Поддержка всех протоколов
     if config.startswith('vmess://'):
         try:
             encoded = config.split('://')[1].split('?')[0]
@@ -892,63 +850,93 @@ def validate_config_structure(config: str) -> bool:
             return all(field in json_data for field in required_fields)
         except:
             return False
+    
     elif config.startswith('vless://'):
         try:
             parsed = urlparse(config)
-            if not parsed.hostname:
-                return False
-            uuid = parsed.username
-            if not uuid or len(uuid) != 36:
-                return False
-            return True
+            return parsed.hostname and len(parsed.username) == 36
         except:
             return False
+    
+    elif config.startswith('trojan://'):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname and parsed.port
+        except:
+            return False
+    
+    elif config.startswith('ss://'):
+        try:
+            # Проверка минимальной структуры
+            parts = config.split('://', 1)[1].split('#', 1)[0]
+            return len(parts) > 10
+        except:
+            return False
+    
+    elif config.startswith('hysteria://') or config.startswith('hy2://') or config.startswith('hysteria2://'):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname is not None
+        except:
+            return False
+    
+    # Проверка IP:PORT формата
     return bool(re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b', config))
 
 def resolve_dns(host: str) -> str:
     """Разрешение DNS с кэшированием"""
-    # Проверка кэша
-    if host in dns_cache:
-        return dns_cache[host]
+    if host in cache['dns']:
+        return cache['dns'][host]
     
     try:
-        if re.match(r'\d+\.\d+\.\d+\.\d+', host):
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
             ip = host
         else:
             ip = socket.gethostbyname(host)
         
-        # Кэширование результата
-        dns_cache[host] = ip
+        cache['dns'][host] = ip
         return ip
-    except:
-        dns_cache[host] = None  # Кэшируем отрицательный результат
+    except socket.gaierror:
+        cache['dns'][host] = None
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка разрешения DNS для {host}: {e}")
+        cache['dns'][host] = None
         return None
 
 def geolocate_ip(ip: str) -> str:
-    """Геолокация IP с кэшированием"""
-    # Проверка кэша
-    if ip in geo_cache:
-        return geo_cache[ip]
+    """Геолокация IP с кэшированием и повторными попытками"""
+    if ip in cache['geo']:
+        return cache['geo'][ip]
     
     try:
-        # Пропускаем приватные IP
-        if re.match(r'(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)', ip):
-            geo_cache[ip] = None
+        if re.match(r'(^127\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)', ip):
+            cache['geo'][ip] = None
             return None
         
-        # Запрос к API
-        response = requests.get(f"{GEOIP_API}{ip}", headers=HEADERS, timeout=3)
-        data = response.json()
-        
-        if data.get('status') == 'success':
-            country = data.get('country')
-            # Кэширование результата
-            geo_cache[ip] = country
-            return country
-    except Exception as e:
-        logger.error(f"Ошибка геолокации для {ip}: {e}")
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = requests.get(f"{GEOIP_API}{ip}", headers=HEADERS, timeout=GEOIP_TIMEOUT)
+                data = response.json()
+                
+                if data.get('status') == 'success':
+                    country = data.get('country')
+                    cache['geo'][ip] = country
+                    return country
+                else:
+                    break
+            except requests.exceptions.Timeout:
+                logger.warning(f"Таймаут геолокации для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(1)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Ошибка геолокации для {ip}: {e}")
+                break
     
-    geo_cache[ip] = None  # Кэшируем отрицательный результат
+    except Exception as e:
+        logger.error(f"Общая ошибка геолокации для {ip}: {e}")
+    
+    cache['geo'][ip] = None
     return None
 
 def detect_by_keywords(
@@ -1006,7 +994,6 @@ def detect_by_keywords(
         "ireland": [r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林']
     }
     
-    # Добавляем дополнительные ключевые слова и шаблоны
     if target_country in patterns:
         patterns[target_country].extend(additional_keywords)
         patterns[target_country].extend(additional_patterns)
@@ -1019,51 +1006,80 @@ def detect_by_keywords(
 
 def extract_host(config: str) -> str:
     """Извлечение хоста из конфига"""
-    if config.startswith('vmess://'):
-        try:
+    try:
+        # VMess
+        if config.startswith('vmess://'):
             encoded = config.split('://')[1].split('?')[0]
             padding = '=' * (-len(encoded) % 4)
             decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
             json_data = json.loads(decoded)
-            host = json_data.get('host') or json_data.get('add', '')
-            if host:
-                return host
-        except Exception as e:
-            logger.debug(f"Ошибка декодирования VMESS: {e}")
-    elif config.startswith('vless://'):
-        try:
+            return json_data.get('host') or json_data.get('add', '')
+        
+        # VLESS, Trojan, Hysteria
+        elif (config.startswith('vless://') or 
+              config.startswith('trojan://') or 
+              config.startswith('hysteria://') or
+              config.startswith('hy2://') or
+              config.startswith('hysteria2://')):
             parsed = urlparse(config)
-            host = parsed.hostname
-            if host:
-                return host
-        except Exception as e:
-            logger.debug(f"Ошибка парсинга VLESS: {e}")
+            return parsed.hostname
+        
+        # ShadowSocks
+        elif config.startswith('ss://'):
+            try:
+                # Стандартный формат
+                parsed = urlparse(config)
+                if parsed.hostname:
+                    return parsed.hostname
+                
+                # Формат с base64 без @
+                base64_str = config[5:].split('#')[0].split('?')[0]
+                padding = '=' * (-len(base64_str) % 4)
+                decoded = base64.b64decode(base64_str + padding).decode('utf-8', errors='replace')
+                
+                if '@' in decoded:
+                    return decoded.split('@')[1].split(':')[0]
+                elif ':' in decoded:
+                    return decoded.split(':')[0]
+            except:
+                pass
+            
+            # Общий метод извлечения
+            return extract_domain(config)
+        
+        # Общий случай
+        else:
+            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', config)
+            if ip_match:
+                return ip_match.group(0)
+            
+            domain = extract_domain(config)
+            if domain:
+                return domain
     
-    host_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', config)
-    if host_match:
-        return host_match.group(0)
-    
-    domain = extract_domain(config)
-    if domain:
-        return domain
+    except Exception as e:
+        logger.debug(f"Ошибка извлечения хоста: {e}")
     
     return None
 
 def extract_domain(config: str) -> str:
     """Извлечение домена из конфига"""
-    url_match = re.search(r'(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})', config, re.IGNORECASE)
-    if url_match:
-        return url_match.group(1)
+    try:
+        url_match = re.search(r'(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})', config, re.IGNORECASE)
+        if url_match:
+            return url_match.group(1)
+        
+        domain_match = re.search(r'\b(?:[a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}\b', config, re.IGNORECASE)
+        if domain_match:
+            return domain_match.group(0)
     
-    domain_match = re.search(r'\b(?:[a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}\b', config, re.IGNORECASE)
-    if domain_match:
-        return domain_match.group(0)
+    except Exception as e:
+        logger.debug(f"Ошибка извлечения домена: {e}")
     
     return None
 
 async def cancel(update: Update, context: CallbackContext):
     """Отмена операции и очистка"""
-    # Удаляем временные файлы, если есть
     if 'file_path' in context.user_data:
         file_path = context.user_data['file_path']
         if os.path.exists(file_path):
@@ -1075,7 +1091,6 @@ async def cancel(update: Update, context: CallbackContext):
                 os.unlink(file_path)
         del context.user_data['file_paths']
     
-    # Очищаем временные данные
     clear_temporary_data(context)
     await update.message.reply_text("Операция отменена.")
     return ConversationHandler.END
@@ -1084,7 +1099,6 @@ def main() -> None:
     """Основная функция запуска бота"""
     application = Application.builder().token(TOKEN).build()
 
-    # Обработчик диалога
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("check_configs", start_check)],
         states={
@@ -1120,7 +1134,6 @@ def main() -> None:
     
     application.add_handler(conv_handler)
 
-    # Определение режима запуска
     port = int(os.environ.get('PORT', 5000))
     external_host = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     
