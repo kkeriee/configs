@@ -4,3 +4,4 @@ requests
 cachetools
 openai
 python-telegram-bot[webhooks]
+PyYAML
