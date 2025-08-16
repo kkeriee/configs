@@ -40,7 +40,7 @@ CHUNK_SIZE = 500     # Уменьшено для стабильности
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
 GEOIP_TIMEOUT = 15   # Увеличен таймаут
-MAX_RETRIES = 3
+MAX_RETRIES = 5  # Увеличение количества попыток
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
     'https', 'hysteria', 'hysteria2', 'wg', 'openvpn', 'brook'
@@ -268,7 +268,7 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны (нейросеть отключена)"
+        return "Инструкции недоступны ( нейросеть отключена)"
     
     if country in instruction_cache:
         return instruction_cache[country]
@@ -863,9 +863,7 @@ def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
 def validate_config_by_geolocation(config: str, target_country: str) -> bool:
     """Проверка конфига по геолокации IP"""
     try:
-        if not validate_config_structure(config):
-            return False
-        
+        # Убрана избыточная проверка структуры конфига
         host = extract_host(config)
         if not host:
             return False
@@ -884,121 +882,8 @@ def validate_config_by_geolocation(config: str, target_country: str) -> bool:
         logger.error(f"Ошибка проверки конфига: {e}")
         return False
 
-def validate_config_structure(config: str) -> bool:
-    """Проверка структуры конфига"""
-    # VMess
-    if config.startswith('vmess://'):
-        try:
-            encoded = config.split('://')[1].split('?')[0]
-            padding = '=' * (-len(encoded) % 4)
-            decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
-            json_data = json.loads(decoded)
-            return all(field in json_data for field in ['v', 'add', 'port', 'id'])
-        except:
-            return False
-    
-    # VLESS
-    elif config.startswith('vless://'):
-        try:
-            parsed = urlparse(config)
-            # Исправлено: разрешаем любой UUID
-            return parsed.hostname and parsed.username
-        except:
-            return False
-    
-    # Trojan
-    elif config.startswith('trojan://'):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            return False
-    
-    # Shadowsocks
-    elif config.startswith('ss://'):
-        try:
-            parts = config.split('@')
-            if len(parts) < 2:
-                return False
-            method_pass = base64.b64decode(parts[0][5:].split('#')[0] + '==').decode()
-            return '@' in method_pass and ':' in method_pass.split('@')[0]
-        except:
-            return False
-    
-    # ShadowsocksR
-    elif config.startswith('ssr://'):
-        try:
-            encoded = config[6:].split('/')[0]
-            padding = '=' * (-len(encoded) % 4)
-            decoded = base64.b64decode(encoded + padding).decode()
-            return ':' in decoded and '/' in decoded
-        except:
-            return False
-    
-    # SOCKS5
-    elif config.startswith('socks5://'):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            return False
-    
-    # HTTP/HTTPS
-    elif config.startswith(('http://', 'https://')):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            return False
-    
-    # Hysteria
-    elif config.startswith('hysteria://'):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            # Проверка JSON-формата
-            try:
-                data = json.loads(config)
-                return 'server' in data and ':' in data['server']
-            except:
-                return False
-    
-    # Hysteria2
-    elif config.startswith('hysteria2://'):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            return False
-    
-    # WireGuard
-    elif '[Interface]' in config and '[Peer]' in config:
-        try:
-            return re.search(r'Endpoint\s*=\s*[\w.-]+:\d+', config) is not None
-        except:
-            return False
-    
-    # OpenVPN
-    elif 'openvpn' in config.lower():
-        try:
-            return re.search(r'remote\s+[\w.-]+\s+\d+', config) is not None
-        except:
-            return False
-    
-    # Brook
-    elif config.startswith('brook://'):
-        try:
-            parsed = urlparse(config)
-            return parsed.hostname and parsed.port
-        except:
-            return False
-    
-    # Общий формат IP:PORT
-    return bool(re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b', config))
-
 def resolve_dns(host: str) -> str:
-    """Разрешение DNS с кэшированием"""
+    """Разрешение DNS с кэшированием и повторными попытками"""
     if host in dns_cache:
         return dns_cache[host]
     
@@ -1006,9 +891,18 @@ def resolve_dns(host: str) -> str:
         if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
             ip = host
         else:
-            # Добавляем таймаут для DNS запросов
-            ip = socket.gethostbyname_ex(host)[-1][0]
-        
+            # Повторные попытки с экспоненциальной задержкой
+            for attempt in range(MAX_RETRIES):
+                try:
+                    ip = socket.gethostbyname_ex(host)[-1][0]
+                    break
+                except (socket.gaierror, socket.timeout):
+                    if attempt < MAX_RETRIES - 1:
+                        delay = 2 ** attempt  # Экспоненциальная задержка
+                        time.sleep(delay)
+                    else:
+                        raise
+    
         dns_cache[host] = ip
         return ip
     except (socket.gaierror, socket.timeout):
@@ -1020,7 +914,7 @@ def resolve_dns(host: str) -> str:
         return None
 
 def geolocate_ip(ip: str) -> str:
-    """Геолокация IP с кэшированием и повторными попытками"""
+    """Геолокация IP с кэшированием"""
     if ip in geo_cache:
         return geo_cache[ip]
     
@@ -1067,7 +961,7 @@ def geolocate_ip(ip: str) -> str:
             except requests.exceptions.Timeout:
                 logger.warning(f"Таймаут геолокации для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(2)  # Увеличена задержка
+                    time.sleep(3)  # Увеличена задержка
             except requests.exceptions.RequestException as e:
                 logger.error(f"Ошибка геолокации для {ip}: {e}")
                 break
@@ -1177,15 +1071,22 @@ def detect_by_keywords(
     return False
 
 def extract_host(config: str) -> str:
-    """Извлечение хоста из конфига"""
+    """Извлечение хоста из конфига с улучшенными паттернами"""
     try:
         # VMess
         if config.startswith('vmess://'):
-            encoded = config.split('://')[1].split('?')[0]
-            padding = '=' * (-len(encoded) % 4)
-            decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
-            json_data = json.loads(decoded)
-            return json_data.get('host') or json_data.get('add', '')
+            try:
+                encoded = config.split('://')[1].split('?')[0]
+                padding = '=' * (-len(encoded) % 4)
+                decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
+                json_data = json.loads(decoded)
+                return json_data.get('host') or json_data.get('add', '')
+            except:
+                # Альтернативное извлечение
+                match = re.search(r'(?:"add"\\s*:\\s*")([^"]+)', config)
+                if match:
+                    return match.group(1)
+                return None
         
         # VLESS/Trojan
         elif config.startswith(('vless://', 'trojan://')):
@@ -1194,21 +1095,30 @@ def extract_host(config: str) -> str:
         
         # Shadowsocks
         elif config.startswith('ss://'):
-            parts = config.split('@')
-            if len(parts) < 2:
+            try:
+                parts = config.split('@')
+                if len(parts) < 2:
+                    return None
+                host_port = parts[1].split('#')[0].split('/')[0]
+                return host_port.split(':')[0]
+            except:
+                # Альтернативное извлечение
+                match = re.search(r'@([a-z0-9.-]+):', config, re.IGNORECASE)
+                if match:
+                    return match.group(1)
                 return None
-            host_port = parts[1].split('#')[0].split('/')[0]
-            return host_port.split(':')[0]
         
         # ShadowsocksR
         elif config.startswith('ssr://'):
-            encoded = config[6:].split('/')[0]
-            padding = '=' * (-len(encoded) % 4)
-            decoded = base64.b64decode(encoded + padding).decode()
-            parts = decoded.split(':')
-            if len(parts) > 2:
-                return parts[0]
-            return None
+            try:
+                encoded = config[6:].split('/')[0]
+                padding = '=' * (-len(encoded) % 4)
+                decoded = base64.b64decode(encoded + padding).decode()
+                parts = decoded.split(':')
+                if len(parts) > 2:
+                    return parts[0]
+            except:
+                return None
         
         # SOCKS5/HTTP/HTTPS/Hysteria/Hysteria2/Brook
         elif any(config.startswith(proto) for proto in [
@@ -1230,15 +1140,19 @@ def extract_host(config: str) -> str:
         
         # Общий случай
         else:
-            # Поиск IP:порт
-            ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', config)
-            if ip_match:
-                return ip_match.group(0)
+            # Расширенные паттерны для извлечения хоста
+            patterns = [
+                r'\b(?:\d{1,3}\.){3}\d{1,3}\b',  # IPv4
+                r'([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}',  # Домен
+                r'@([\w\.-]+):?',  # Формат user@host:port
+                r'host\s*[:=]\s*"([^"]+)"',  # JSON-формат
+                r'address\s*=\s*([\w\.-]+)'  # Конфигурационные файлы
+            ]
             
-            # Поиск домена
-            domain = extract_domain(config)
-            if domain:
-                return domain
+            for pattern in patterns:
+                match = re.search(pattern, config, re.IGNORECASE)
+                if match:
+                    return match.group(0)
     
     except Exception as e:
         logger.debug(f"Ошибка извлечения хоста: {e}")
