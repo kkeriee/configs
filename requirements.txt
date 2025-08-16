@@ -1,0 +1,6 @@
+python-telegram-bot
+pycountry
+requests
+cachetools
+openai
+python-telegram-bot[webhooks]
