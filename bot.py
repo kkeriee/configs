@@ -10,6 +10,7 @@ import time
 import socket
 import concurrent.futures
 import random
+import asyncio  # Добавлен импорт asyncio для исправления ошибки
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -34,7 +35,7 @@ CHUNK_SIZE = 500
 MAX_CONFIGS_PER_USER = 50000
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 # Состояния диалога
-WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, SENDING_CONFIGS, PROCESSING = range(5)
+WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, WAITING_COUNT, SENDING_CONFIGS, PROCESSING = range(6)  # Добавлено состояние WAITING_COUNT
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -425,11 +426,14 @@ async def fast_search(update: Update, context: CallbackContext):
         return ConversationHandler.END
     
     context.user_data['matched_configs'] = matched_configs
-    context.user_data['current_index'] = 0
-    context.user_data['stop_sending'] = False
+    context.user_data['total_matched'] = len(matched_configs)
     
-    # Отправляем найденные конфиги
-    await send_configs(update, context)
+    # Запрашиваем у пользователя количество конфигов
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"✅ Найдено {len(matched_configs)} конфигураций для {context.user_data['country']}.\n\nВведите количество конфигов, которые вы хотите получить (максимум {len(matched_configs)}):"
+    )
+    return WAITING_COUNT
 
 async def strict_search(update: Update, context: CallbackContext):
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
@@ -518,11 +522,40 @@ async def strict_search(update: Update, context: CallbackContext):
         return ConversationHandler.END
     
     context.user_data['matched_configs'] = strict_matched_configs
-    context.user_data['current_index'] = 0
-    context.user_data['stop_sending'] = False
+    context.user_data['total_matched'] = len(strict_matched_configs)
     
-    # Отправляем найденные конфиги
-    await send_configs(update, context)
+    # Запрашиваем у пользователя количество конфигов
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"✅ Найдено {len(strict_matched_configs)} конфигураций для {context.user_data['country']}.\n\nВведите количество конфигов, которые вы хотите получить (максимум {len(strict_matched_configs)}):"
+    )
+    return WAITING_COUNT
+
+async def handle_config_count(update: Update, context: CallbackContext):
+    """Обрабатывает введенное пользователем количество конфигов"""
+    try:
+        count = int(update.message.text)
+        max_count = context.user_data.get('total_matched', 0)
+        
+        if count <= 0:
+            await update.message.reply_text("❌ Количество должно быть положительным числом. Попробуйте еще раз:")
+            return WAITING_COUNT
+            
+        if count > max_count:
+            await update.message.reply_text(f"❌ Максимальное доступное количество: {max_count}. Попробуйте еще раз:")
+            return WAITING_COUNT
+            
+        context.user_data['config_count'] = count
+        context.user_data['current_index'] = 0
+        context.user_data['stop_sending'] = False
+        
+        # Отправляем найденные конфиги
+        await send_configs(update, context)
+        return SENDING_CONFIGS
+        
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите число. Попробуйте еще раз:")
+        return WAITING_COUNT
 
 async def update_progress_message(update: Update, context: CallbackContext, found_count: int, processed: int, total: int, percentage: int, stage_message: str = None):
     """Обновляет сообщение с прогрессом обработки"""
@@ -560,13 +593,14 @@ async def update_progress_message(update: Update, context: CallbackContext, foun
 async def send_configs(update: Update, context: CallbackContext):
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
     matched_configs = context.user_data.get('matched_configs', [])
+    config_count = context.user_data.get('config_count', 20)  # Количество конфигов, запрошенное пользователем
     current_index = context.user_data.get('current_index', 0)
     country_name = context.user_data.get('country', '')
     stop_sending = context.user_data.get('stop_sending', False)
     
-    if not matched_configs or current_index >= len(matched_configs) or stop_sending:
-        if not stop_sending and current_index < len(matched_configs):
-            await context.bot.send_message(chat_id=user_id, text="✅ Все конфиги отправлены.")
+    if not matched_configs or current_index >= len(matched_configs) or stop_sending or current_index >= config_count:
+        if not stop_sending and current_index < min(len(matched_configs), config_count):
+            await context.bot.send_message(chat_id=user_id, text="✅ Все запрошенные конфиги отправлены.")
         return ConversationHandler.END
     
     stop_button = [[InlineKeyboardButton("⏹ Остановить отправку", callback_data='stop_sending')]]
@@ -584,7 +618,7 @@ async def send_configs(update: Update, context: CallbackContext):
     if current_index == 0:
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"✅ Найдено {len(matched_configs)} конфигураций для {country_name}. Начинаю отправку..."
+            text=f"✅ Начинаю отправку {config_count} конфигураций для {country_name}..."
         )
     
     flag = get_country_flag(country_name)
@@ -592,18 +626,22 @@ async def send_configs(update: Update, context: CallbackContext):
     
     # Формируем сообщение с конфигами
     message = f"Конфиги для {country_name}:\n\n"
-    config_count = 0
+    config_count_sent = 0
     start_index = current_index
     
-    while current_index < len(matched_configs) and config_count < 20:
+    # Определяем максимальное количество конфигов для отправки в одном сообщении
+    max_configs_per_message = 15
+    
+    while current_index < len(matched_configs) and config_count_sent < max_configs_per_message and current_index < config_count:
         config = matched_configs[current_index].strip()
         if config:
-            message += f"{config}\n"
-            config_count += 1
+            # Добавляем флаг перед каждым конфигом
+            message += f"{flag} {config}\n"
+            config_count_sent += 1
             current_index += 1
     
     try:
-        # Отправляем конфиги с названием страны вместо имени языка программирования
+        # Отправляем конфиги с флагом страны перед каждым конфигом
         await context.bot.send_message(
             chat_id=user_id,
             text=f"<pre>{message}</pre>",
@@ -615,15 +653,16 @@ async def send_configs(update: Update, context: CallbackContext):
     
     context.user_data['current_index'] = current_index
     
-    if current_index < len(matched_configs) and not context.user_data.get('stop_sending', False):
+    if current_index < min(len(matched_configs), config_count) and not context.user_data.get('stop_sending', False):
         # Продолжаем отправку оставшихся конфигов
         time.sleep(0.3)  # Небольшая пауза между отправками
         await send_configs(update, context)
     else:
         if not context.user_data.get('stop_sending', False):
+            actual_sent = min(current_index, config_count)
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"✅ Завершено. Отправлено {len(matched_configs)} конфигураций для {country_name}."
+                text=f"✅ Завершено. Отправлено {actual_sent} конфигураций для {country_name}."
             )
         return ConversationHandler.END
 
@@ -708,17 +747,12 @@ def validate_config(config: str, target_country: str) -> tuple:
         
         # Используем нейросеть только для небольшого процента конфигов
         if neural_client and len(config) < 1000 and random.random() < NEURAL_USAGE_RATE:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
-                neural_country = loop.run_until_complete(neural_detect_country(config))
+                neural_country = asyncio.run(neural_detect_country(config))
                 if neural_country and neural_country == target_country:
                     return (config, True)
             except Exception as e:
                 logger.error(f"Ошибка нейросети при проверке конфига: {e}")
-            finally:
-                loop.close()
         
         return (config, False)
     except Exception as e:
@@ -874,51 +908,186 @@ def get_country_flag_pattern(country_name: str) -> str:
 def detect_by_keywords(config: str, target_country: str) -> bool:
     """Определяет, относится ли конфиг к указанной стране по ключевым словам"""
     patterns = {
-        'japan': [r'jp\b', r'japan', r'tokyo', r'\.jp\b', r'日本', r'東京'],
-        'united states': [r'us\b', r'usa\b', r'united states', r'new york', r'\.us\b', r'美国', r'紐約'],
-        'russia': [r'ru\b', r'russia', r'moscow', r'\.ru\b', r'россия', r'俄国', r'москва'],
-        'germany': [r'de\b', r'germany', r'frankfurt', r'\.de\b', r'германия', r'德国', r'フランクフルト'],
-        'united kingdom': [r'uk\b', r'united kingdom', r'london', r'\.uk\b', r'英国', r'倫敦', r'gb'],
-        'france': [r'france', r'paris', r'\.fr\b', r'法国', r'巴黎'],
-        'brazil': [r'brazil', r'sao paulo', r'\.br\b', r'巴西', r'聖保羅'],
-        'singapore': [r'singapore', r'\.sg\b', r'新加坡', r'星加坡'],
-        'south korea': [r'korea', r'seoul', r'\.kr\b', r'韩国', r'首爾', r'korean'],
-        'turkey': [r'turkey', r'istanbul', r'\.tr\b', r'土耳其', r'伊斯坦布爾'],
-        'taiwan': [r'taiwan', r'taipei', r'\.tw\b', r'台湾', r'台北'],
-        'switzerland': [r'switzerland', r'zurich', r'\.ch\b', r'瑞士', r'蘇黎世'],
-        'india': [r'india', r'mumbai', r'\.in\b', r'印度', r'孟買'],
-        'canada': [r'canada', r'toronto', r'\.ca\b', r'加拿大', r'多倫多'],
-        'australia': [r'australia', r'sydney', r'\.au\b', r'澳洲', r'悉尼'],
-        'china': [r'china', r'beijing', r'\.cn\b', r'中国', r'北京'],
-        'italy': [r'italy', r'rome', r'\.it\b', r'意大利', r'羅馬'],
-        'spain': [r'spain', r'madrid', r'\.es\b', r'西班牙', r'马德里'],
-        'portugal': [r'portugal', r'lisbon', r'\.pt\b', r'葡萄牙', r'里斯本'],
-        'norway': [r'norway', r'oslo', r'\.no\b', r'挪威', r'奥斯陆'],
-        'finland': [r'finland', r'helsinki', r'\.fi\b', r'芬兰', r'赫尔辛基'],
-        'denmark': [r'denmark', r'copenhagen', r'\.dk\b', r'丹麦', r'哥本哈根'],
-        'poland': [r'poland', r'warsaw', r'\.pl\b', r'波兰', r'华沙'],
-        'ukraine': [r'ukraine', r'kyiv', r'\.ua\b', r'乌克兰', r'基辅'],
-        'belarus': [r'belarus', r'minsk', r'\.by\b', r'白俄罗斯', r'明斯克'],
-        'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'印度尼西亚', r'雅加达'],
-        'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'马来西亚', r'吉隆坡'],
-        'philippines': [r'philippines', r'manila', r'\.ph\b', r'菲律宾', r'马尼ла'],
-        'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'越南', r'河内'],
-        'thailand': [r'thailand', r'bangkok', r'\.th\b', r'泰国', r'曼谷'],
-        'czech republic': [r'czech', r'prague', r'\.cz\b', r'捷克', r'布拉格'],
-        'romania': [r'romania', r'bucharest', r'\.ro\b', r'罗马尼亚', r'布加勒斯特'],
-        'hungary': [r'hungary', r'budapest', r'\.hu\b', r'匈牙利', r'布达佩斯'],
-        'greece': [r'greece', r'athens', r'\.gr\b', r'希腊', r'雅典'],
-        'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'保加利亚', r'索非а'],
-        'egypt': [r'egypt', r'cairo', r'\.eg\b', r'埃及', r'开罗'],
-        'nigeria': [r'nigeria', r'abuja', r'\.ng\b', r'尼日利亚', r'阿布贾'],
-        'kenya': [r'kenya', r'nairobi', r'\.ke\b', r'肯尼亚', r'内罗毕'],
-        'colombia': [r'colombia', r'bogota', r'\.co\b', r'哥伦比亚', r'波哥大'],
-        'peru': [r'peru', r'lima', r'\.pe\b', r'秘鲁', r'利马'],
-        'chile': [r'chile', r'santiago', r'\.cl\b', r'智利', r'圣地亚哥'],
-        'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'委内瑞拉', r'加拉加斯'],
-        "austria": [r'austria', r'vienna', r'\.at\b', r'奥地利', r'维也纳'],
-        "belgium": [r'belgium', r'brussels', r'\.be\b', r'比利时', r'布鲁塞尔'],
-        "ireland": [r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林']
+        'japan': [
+            r'jp\b', r'japan', r'tokyo', r'\.jp\b', r'日本', r'東京',
+            r'japan|jp|tokyo|jp\.|japan\s', r'jp\.', r'japan\s', r'jp\s', r'japan\.', r'japan server'
+        ],
+        'united states': [
+            r'us\b', r'usa\b', r'united states', r'new york', r'\.us\b', r'美国', r'紐約',
+            r'us\.', r'us\s', r'usa\.', r'usa\s', r'united\sstates', r'new\syork', r'us server'
+        ],
+        'russia': [
+            r'ru\b', r'russia', r'moscow', r'\.ru\b', r'россия', r'俄国', r'москва',
+            r'ru\.', r'ru\s', r'russia\.', r'russia\s', r'moscow', r'российская', r'ру сервер'
+        ],
+        'germany': [
+            r'de\b', r'germany', r'frankfurt', r'\.de\b', r'германия', r'德国', r'フランクフルト',
+            r'de\.', r'de\s', r'germany\.', r'germany\s', r'frankfurt', r'deutschland', r'de сервер'
+        ],
+        'united kingdom': [
+            r'uk\b', r'united kingdom', r'london', r'\.uk\b', r'英国', r'倫敦', r'gb',
+            r'uk\.', r'uk\s', r'gb\.', r'gb\s', r'united\suk', r'london', r'uk server'
+        ],
+        'france': [
+            r'france', r'paris', r'\.fr\b', r'法国', r'巴黎',
+            r'fr\.', r'fr\s', r'france\.', r'france\s', r'paris', r'франция', r'fr сервер'
+        ],
+        'brazil': [
+            r'brazil', r'sao paulo', r'\.br\b', r'巴西', r'聖保羅',
+            r'br\.', r'br\s', r'brazil\.', r'brazil\s', r'sao\spaulo', r'бразилия', r'br сервер'
+        ],
+        'singapore': [
+            r'singapore', r'\.sg\b', r'新加坡', r'星加坡',
+            r'sg\.', r'sg\s', r'singapore\.', r'singapore\s', r'singapore server'
+        ],
+        'south korea': [
+            r'korea', r'seoul', r'\.kr\b', r'韩国', r'首爾', r'korean',
+            r'kr\.', r'kr\s', r'korea\.', r'korea\s', r'seoul', r'корея', r'kr сервер'
+        ],
+        'turkey': [
+            r'turkey', r'istanbul', r'\.tr\b', r'土耳其', r'伊斯坦布爾',
+            r'tr\.', r'tr\s', r'turkey\.', r'turkey\s', r'istanbul', r'турция', r'tr сервер'
+        ],
+        'taiwan': [
+            r'taiwan', r'taipei', r'\.tw\b', r'台湾', r'台北',
+            r'tw\.', r'tw\s', r'taiwan\.', r'taiwan\s', r'taipei', r'тайвань', r'tw сервер'
+        ],
+        'switzerland': [
+            r'switzerland', r'zurich', r'\.ch\b', r'瑞士', r'蘇黎世',
+            r'ch\.', r'ch\s', r'switzerland\.', r'switzerland\s', r'zurich', r'швейцария', r'ch сервер'
+        ],
+        'india': [
+            r'india', r'mumbai', r'\.in\b', r'印度', r'孟買',
+            r'in\.', r'in\s', r'india\.', r'india\s', r'mumbai', r'индия', r'in сервер'
+        ],
+        'canada': [
+            r'canada', r'toronto', r'\.ca\b', r'加拿大', r'多倫多',
+            r'ca\.', r'ca\s', r'canada\.', r'canada\s', r'toronto', r'канада', r'ca сервер'
+        ],
+        'australia': [
+            r'australia', r'sydney', r'\.au\b', r'澳洲', r'悉尼',
+            r'au\.', r'au\s', r'australia\.', r'australia\s', r'sydney', r'австралия', r'au сервер'
+        ],
+        'china': [
+            r'china', r'beijing', r'\.cn\b', r'中国', r'北京',
+            r'cn\.', r'cn\s', r'china\.', r'china\s', r'beijing', r'китай', r'cn сервер'
+        ],
+        'italy': [
+            r'italy', r'rome', r'\.it\b', r'意大利', r'羅馬',
+            r'it\.', r'it\s', r'italy\.', r'italy\s', r'rome', r'италия', r'it сервер'
+        ],
+        'spain': [
+            r'spain', r'madrid', r'\.es\b', r'西班牙', r'马德里',
+            r'es\.', r'es\s', r'spain\.', r'spain\s', r'madrid', r'испания', r'es сервер'
+        ],
+        'portugal': [
+            r'portugal', r'lisbon', r'\.pt\b', r'葡萄牙', r'里斯本',
+            r'pt\.', r'pt\s', r'portugal\.', r'portugal\s', r'lisbon', r'португалия', r'pt сервер'
+        ],
+        'norway': [
+            r'norway', r'oslo', r'\.no\b', r'挪威', r'奥斯陆',
+            r'no\.', r'no\s', r'norway\.', r'norway\s', r'oslo', r'норвегия', r'no сервер'
+        ],
+        'finland': [
+            r'finland', r'helsinki', r'\.fi\b', r'芬兰', r'赫尔辛基',
+            r'fi\.', r'fi\s', r'finland\.', r'finland\s', r'helsinki', r'финляндия', r'fi сервер'
+        ],
+        'denmark': [
+            r'denmark', r'copenhagen', r'\.dk\b', r'丹麦', r'哥本哈根',
+            r'dk\.', r'dk\s', r'denmark\.', r'denmark\s', r'copenhagen', r'дания', r'dk сервер'
+        ],
+        'poland': [
+            r'poland', r'warsaw', r'\.pl\b', r'波兰', r'华沙',
+            r'pl\.', r'pl\s', r'poland\.', r'poland\s', r'warsaw', r'польша', r'pl сервер'
+        ],
+        'ukraine': [
+            r'ukraine', r'kyiv', r'\.ua\b', r'乌克兰', r'基辅',
+            r'ua\.', r'ua\s', r'ukraine\.', r'ukraine\s', r'kyiv', r'украина', r'ua сервер'
+        ],
+        'belarus': [
+            r'belarus', r'minsk', r'\.by\b', r'白俄罗斯', r'明斯克',
+            r'by\.', r'by\s', r'belarus\.', r'belarus\s', r'minsk', r'беларусь', r'by сервер'
+        ],
+        'indonesia': [
+            r'indonesia', r'jakarta', r'\.id\b', r'印度尼西亚', r'雅加达',
+            r'id\.', r'id\s', r'indonesia\.', r'indonesia\s', r'jakarta', r'индонезия', r'id сервер'
+        ],
+        'malaysia': [
+            r'malaysia', r'kuala lumpur', r'\.my\b', r'马来西亚', r'吉隆坡',
+            r'my\.', r'my\s', r'malaysia\.', r'malaysia\s', r'kuala\slumpur', r'малайзия', r'my сервер'
+        ],
+        'philippines': [
+            r'philippines', r'manila', r'\.ph\b', r'菲律宾', r'马尼拉',
+            r'ph\.', r'ph\s', r'philippines\.', r'philippines\s', r'manila', r'филиппины', r'ph сервер'
+        ],
+        'vietnam': [
+            r'vietnam', r'hanoi', r'\.vn\b', r'越南', r'河内',
+            r'vn\.', r'vn\s', r'vietnam\.', r'vietnam\s', r'hanoi', r'вьетнам', r'vn сервер'
+        ],
+        'thailand': [
+            r'thailand', r'bangkok', r'\.th\b', r'泰国', r'曼谷',
+            r'th\.', r'th\s', r'thailand\.', r'thailand\s', r'bangkok', r'тайланд', r'th сервер'
+        ],
+        'czech republic': [
+            r'czech', r'prague', r'\.cz\b', r'捷克', r'布拉格',
+            r'cz\.', r'cz\s', r'czech\.', r'czech\s', r'prague', r'чехия', r'cz сервер'
+        ],
+        'romania': [
+            r'romania', r'bucharest', r'\.ro\b', r'罗马尼亚', r'布加勒斯特',
+            r'ro\.', r'ro\s', r'romania\.', r'romania\s', r'bucharest', r'румыния', r'ro сервер'
+        ],
+        'hungary': [
+            r'hungary', r'budapest', r'\.hu\b', r'匈牙利', r'布达佩斯',
+            r'hu\.', r'hu\s', r'hungary\.', r'hungary\s', r'budapest', r'венгрия', r'hu сервер'
+        ],
+        'greece': [
+            r'greece', r'athens', r'\.gr\b', r'希腊', r'雅典',
+            r'gr\.', r'gr\s', r'greece\.', r'greece\s', r'athens', r'греция', r'gr сервер'
+        ],
+        'bulgaria': [
+            r'bulgaria', r'sofia', r'\.bg\b', r'保加利亚', r'索非а',
+            r'bg\.', r'bg\s', r'bulgaria\.', r'bulgaria\s', r'sofia', r'болгария', r'bg сервер'
+        ],
+        'egypt': [
+            r'egypt', r'cairo', r'\.eg\b', r'埃及', r'开罗',
+            r'eg\.', r'eg\s', r'egypt\.', r'egypt\s', r'cairo', r'египет', r'eg сервер'
+        ],
+        'nigeria': [
+            r'nigeria', r'abuja', r'\.ng\b', r'尼日利亚', r'阿布贾',
+            r'ng\.', r'ng\s', r'nigeria\.', r'nigeria\s', r'abuja', r'нигерия', r'ng сервер'
+        ],
+        'kenya': [
+            r'kenya', r'nairobi', r'\.ke\b', r'肯尼亚', r'内罗毕',
+            r'ke\.', r'ke\s', r'kenya\.', r'kenya\s', r'nairobi', r'кения', r'ke сервер'
+        ],
+        'colombia': [
+            r'colombia', r'bogota', r'\.co\b', r'哥伦比亚', r'波哥大',
+            r'co\.', r'co\s', r'colombia\.', r'colombia\s', r'bogota', r'колумбия', r'co сервер'
+        ],
+        'peru': [
+            r'peru', r'lima', r'\.pe\b', r'秘鲁', r'利马',
+            r'pe\.', r'pe\s', r'peru\.', r'peru\s', r'lima', r'перу', r'pe сервер'
+        ],
+        'chile': [
+            r'chile', r'santiago', r'\.cl\b', r'智利', r'圣地亚哥',
+            r'cl\.', r'cl\s', r'chile\.', r'chile\s', r'santiago', r'чили', r'cl сервер'
+        ],
+        'venezuela': [
+            r'venezuela', r'caracas', r'\.ve\b', r'委内瑞拉', r'加拉加斯',
+            r've\.', r've\s', r'venezuela\.', r'venezuela\s', r'caracas', r'венесуэла', r've сервер'
+        ],
+        "austria": [
+            r'austria', r'vienna', r'\.at\b', r'奥地利', r'维也纳',
+            r'at\.', r'at\s', r'austria\.', r'austria\s', r'vienna', r'австрия', r'at сервер'
+        ],
+        "belgium": [
+            r'belgium', r'brussels', r'\.be\b', r'比利时', r'布鲁塞尔',
+            r'be\.', r'be\s', r'belgium\.', r'belgium\s', r'brussels', r'бельгия', r'be сервер'
+        ],
+        "ireland": [
+            r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林',
+            r'ie\.', r'ie\s', r'ireland\.', r'ireland\s', r'dublin', r'ирландия', r'ie сервер'
+        ]
     }
     
     if target_country in patterns:
@@ -1009,6 +1178,9 @@ def main() -> None:
             ],
             WAITING_MODE: [
                 CallbackQueryHandler(button_handler)
+            ],
+            WAITING_COUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_config_count)
             ],
             PROCESSING: [
                 CallbackQueryHandler(button_handler)
