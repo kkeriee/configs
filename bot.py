@@ -4,6 +4,7 @@ import logging
 import tempfile
 import base64
 import json
+import yaml
 import pycountry
 import requests
 import time
@@ -27,17 +28,20 @@ from openai import OpenAI
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEURAL_API_KEY = os.getenv("NEURAL_API_KEY")
-MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 МБ
+MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
 GEOIP_API = "http://ip-api.com/json/"
-HEADERS = {'User-Agent': 'Telegram V2Ray Config Bot/3.0'}
-MAX_WORKERS = 10
-CHUNK_SIZE = 500
+HEADERS = {'User-Agent': 'Telegram Multi-Protocol VPN Bot/4.0'}
+MAX_WORKERS = 15
+CHUNK_SIZE = 1000
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
 GEOIP_TIMEOUT = 10
 MAX_RETRIES = 3
-MAX_CONFIGS_PER_REQUEST = 50  # Лимит конфигов на запрос
+SUPPORTED_PROTOCOLS = {
+    'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
+    'https', 'hysteria', 'hysteria2', 'wg', 'openvpn', 'brook'
+}
 
 # Состояния диалога
 (START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, 
@@ -63,15 +67,14 @@ else:
     logger.warning("NEURAL_API_KEY не установлен, функции нейросети отключены")
 
 # Кэширование
-cache = {
-    'country': {},
-    'geo': {},
-    'dns': {},
-    'config': {},
-    'instruction': {},
-    'country_normalization': {},
-    'neural_improvement': {}
-}
+country_cache = {}
+geo_cache = {}
+dns_cache = {}
+config_cache = {}
+instruction_cache = {}
+country_normalization_cache = {}
+neural_improvement_cache = {}
+protocol_cache = {}
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -79,7 +82,7 @@ def clear_temporary_data(context: CallbackContext):
         'matched_configs', 'current_index', 'stop_sending', 
         'strict_in_progress', 'improved_search', 'country_request', 
         'country', 'target_country', 'country_codes', 'search_mode',
-        'file_path', 'file_paths', 'total_configs'
+        'file_path', 'file_paths'
     ]
     for key in keys_to_clear:
         if key in context.user_data:
@@ -89,10 +92,11 @@ def normalize_text(text: str) -> str:
     """Нормализация текста страны для поиска"""
     text = text.lower().strip()
     
-    if text in cache['country_normalization']:
-        return cache['country_normalization'][text]
+    if text in country_normalization_cache:
+        return country_normalization_cache[text]
     
     ru_en_map = {
+        # Существующие страны
         "россия": "russia", "русский": "russia", "рф": "russia", "ру": "russia",
         "сша": "united states", "америка": "united states", "usa": "united states", 
         "us": "united states", "соединенные штаты": "united states", "соединённые штаты": "united states",
@@ -150,12 +154,41 @@ def normalize_text(text: str) -> str:
         "венесуэла": "venezuela", "ve": "venezuela", "венес": "venezuela",
         "австрия": "austria", "at": "austria", "австр": "austria",
         "бельгия": "belgium", "be": "belgium", "бельг": "belgium",
-        "ирландия": "ireland", "ie": "ireland", "ирл": "ireland"
+        "ирландия": "ireland", "ie": "ireland", "ирл": "ireland",
+        # Дополнительные страны
+        "алжир": "algeria", "dz": "algeria", "алж": "algeria",
+        "ангола": "angola", "ao": "angola", "анг": "angola",
+        "бангладеш": "bangladesh", "bd": "bangladesh", "банг": "bangladesh",
+        "камбоджа": "cambodia", "kh": "cambodia", "камб": "cambodia",
+        "коста-рика": "costa rica", "cr": "costa rica", "коста": "costa rica",
+        "хорватия": "croatia", "hr": "croatia", "хорв": "croatia",
+        "куба": "cuba", "cu": "cuba",
+        "эстония": "estonia", "ee": "estonia", "эст": "estonia",
+        "грузия": "georgia", "ge": "georgia", "груз": "georgia",
+        "гана": "ghana", "gh": "ghana",
+        "иран": "iran", "ir": "iran",
+        "иордания": "jordan", "jo": "jordan", "иорд": "jordan",
+        "казахстан": "kazakhstan", "kz": "kazakhstan", "каз": "kazakhstan",
+        "кувейт": "kuwait", "kw": "kuwait", "кув": "kuwait",
+        "ливан": "lebanon", "lb": "lebanon", "либ": "lebanon",
+        "ливия": "libya", "ly": "libya",
+        "марокко": "morocco", "ma": "morocco", "мар": "morocco",
+        "непал": "nepal", "np": "nepal",
+        "оман": "oman", "om": "oman",
+        "пакистан": "pakistan", "pk": "pakistan", "пак": "pakistan",
+        "катар": "qatar", "qa": "qatar", "кат": "qatar",
+        "сербия": "serbia", "rs": "serbia", "серб": "serbia",
+        "словакия": "slovakia", "sk": "slovakia", "словак": "slovakia",
+        "словения": "slovenia", "si": "slovenia", "словен": "slovenia",
+        "судан": "sudan", "sd": "sudan",
+        "сирия": "syria", "sy": "syria",
+        "тунис": "tunisia", "tn": "tunisia", "тун": "tunisia",
+        "уругвай": "uruguay", "uy": "uruguay", "уруг": "uruguay",
+        "узбекистан": "uzbekistan", "uz": "uzbekistan", "узб": "uzbekistan",
+        "йемен": "yemen", "ye": "yemen"
     }
     for key, value in ru_en_map.items():
         text = text.replace(key, value)
-    
-    cache['country_normalization'][text] = text
     return text
 
 async def neural_normalize_country(text: str) -> str:
@@ -163,8 +196,8 @@ async def neural_normalize_country(text: str) -> str:
     if not neural_client:
         return None
     
-    if text in cache['country']:
-        return cache['country'][text]
+    if text in country_cache:
+        return country_cache[text]
     
     system_prompt = (
         "Определи страну по тексту. Верни только английское название страны в нижнем регистре. "
@@ -186,7 +219,7 @@ async def neural_normalize_country(text: str) -> str:
             try:
                 country = pycountry.countries.search_fuzzy(result)[0]
                 country_name = country.name.lower()
-                cache['country'][text] = country_name
+                country_cache[text] = country_name
                 return country_name
             except:
                 return result
@@ -201,8 +234,8 @@ async def neural_detect_country(config: str) -> str:
         return None
     
     config_hash = hash(config)
-    if config_hash in cache['config']:
-        return cache['config'][config_hash]
+    if config_hash in config_cache:
+        return config_cache[config_hash]
     
     system_prompt = (
         "Определи страну для этого VPN конфига. Ответь только названием страны на английском в нижнем регистре "
@@ -223,7 +256,7 @@ async def neural_detect_country(config: str) -> str:
         if 'unknown' in result:
             return None
         
-        cache['config'][config_hash] = result
+        config_cache[config_hash] = result
         return result
     except Exception as e:
         logger.error(f"Ошибка нейросети при определении страны конфига: {e}")
@@ -234,8 +267,8 @@ async def generate_country_instructions(country: str) -> str:
     if not neural_client:
         return "Инструкции недоступны (нейросеть отключена)"
     
-    if country in cache['instruction']:
-        return cache['instruction'][country]
+    if country in instruction_cache:
+        return instruction_cache[country]
     
     system_prompt = (
         f"Ты эксперт по VPN. Сгенерируй краткую инструкцию по использованию VPN для пользователей из {country}. "
@@ -253,7 +286,7 @@ async def generate_country_instructions(country: str) -> str:
             temperature=0.7
         )
         instructions = response.choices[0].message.content.strip()
-        cache['instruction'][country] = instructions
+        instruction_cache[country] = instructions
         return instructions
     except Exception as e:
         logger.error(f"Ошибка генерации инструкций: {e}")
@@ -264,11 +297,11 @@ async def neural_improve_search(country: str) -> dict:
     if not neural_client:
         return None
     
-    if country in cache['neural_improvement']:
-        return cache['neural_improvement'][country]
+    if country in neural_improvement_cache:
+        return neural_improvement_cache[country]
     
     system_prompt = (
-        "Ты — поисковый агент для VPN бота. Сгенерируй улучшенные инструкции для поиска конфигов в указанной стране. "
+        "Ты — поисковый агент для бота VPN. Сгенерируй улучшенные инструкции для поиска конфигов в указанной стране. "
         "Верни JSON объект с полями: "
         "'keywords' (дополнительные ключевые слова для поиска), "
         "'patterns' (регулярные выражения для идентификации страны в конфигах). "
@@ -287,7 +320,7 @@ async def neural_improve_search(country: str) -> dict:
         )
         result = response.choices[0].message.content.strip()
         improvement = json.loads(result)
-        cache['neural_improvement'][country] = improvement
+        neural_improvement_cache[country] = improvement
         return improvement
     except Exception as e:
         logger.error(f"Ошибка улучшения поиска: {e}")
@@ -335,19 +368,26 @@ async def handle_document(update: Update, context: CallbackContext):
         await file.download_to_memory(tmp_file)
         tmp_file.seek(0)
         content = tmp_file.read().decode('utf-8', errors='replace')
-        lines = content.splitlines()
-        configs = [line.strip() for line in lines if line.strip()]
         
-        # Ограничение количества конфигов
-        if len(configs) > MAX_CONFIGS_PER_REQUEST:
-            configs = configs[:MAX_CONFIGS_PER_REQUEST]
-            await update.message.reply_text(
-                f"⚠️ Файл содержит слишком много конфигов. Обработано первых {MAX_CONFIGS_PER_REQUEST}."
-            )
+        # Обработка многострочных конфигов
+        configs = []
+        current_config = []
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped:
+                # Проверка на начало нового конфига
+                if any(stripped.startswith(proto + "://") for proto in SUPPORTED_PROTOCOLS):
+                    if current_config:
+                        configs.append("\n".join(current_config))
+                        current_config = []
+                current_config.append(stripped)
+        
+        # Добавляем последний конфиг
+        if current_config:
+            configs.append("\n".join(current_config))
         
         context.user_data['configs'] = configs
         context.user_data['file_name'] = document.file_name
-        context.user_data['total_configs'] = len(configs)
         tmp_file_path = tmp_file.name
     
     if os.path.exists(tmp_file_path):
@@ -417,7 +457,6 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
     return context.user_data.get('current_state', WAITING_COUNTRY)
 
 async def start_choice(update: Update, context: CallbackContext) -> int:
-    """Обработка выбора действия в начале"""
     return await button_handler(update, context)
 
 async def handle_country(update: Update, context: CallbackContext):
@@ -443,9 +482,9 @@ async def handle_country(update: Update, context: CallbackContext):
                 country = countries[0]
                 found_by_neural = True
                 logger.info(f"Нейросеть определила страну: {country.name}")
-                cache['country_normalization'][country_request] = neural_country
+                country_normalization_cache[country_request] = neural_country
                 if normalized_text != country_request:
-                    cache['country_normalization'][normalized_text] = neural_country
+                    country_normalization_cache[normalized_text] = neural_country
             except:
                 logger.warning("Нейросеть не смогла определить страну")
     
@@ -459,10 +498,12 @@ async def handle_country(update: Update, context: CallbackContext):
                     keywords = improved_search.get('keywords', [])
                     patterns = improved_search.get('patterns', [])
                     logger.info(f"Улучшенный поиск: keywords={keywords}, patterns={patterns}")
+                    
                     context.user_data['improved_search'] = {
                         'keywords': keywords,
                         'patterns': patterns
                     }
+                    
                     await update.message.reply_text(
                         f"🔍 Нейросеть улучшила поиск для '{country_request}'. Попробуйте снова."
                     )
@@ -485,13 +526,13 @@ async def handle_country(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if country.name.lower() not in cache['instruction']:
+    if country.name.lower() not in instruction_cache:
         instructions = await generate_country_instructions(country.name)
-        cache['instruction'][country.name.lower()] = instructions
+        instruction_cache[country.name.lower()] = instructions
     
     await update.message.reply_text(
         f"🌍 Вы выбрали страну: {country.name}\n"
-        f"ℹ️ {cache['instruction'].get(country.name.lower(), 'Инструкция генерируется...')}\n\n"
+        f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция генерируется...')}\n\n"
         "Выберите режим поиска:",
         reply_markup=reply_markup
     )
@@ -839,25 +880,26 @@ def validate_config_by_geolocation(config: str, target_country: str) -> bool:
 
 def validate_config_structure(config: str) -> bool:
     """Проверка структуры конфига"""
-    # Поддержка всех протоколов
+    # VMess
     if config.startswith('vmess://'):
         try:
             encoded = config.split('://')[1].split('?')[0]
             padding = '=' * (-len(encoded) % 4)
             decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
             json_data = json.loads(decoded)
-            required_fields = ['v', 'add', 'port', 'id']
-            return all(field in json_data for field in required_fields)
+            return all(field in json_data for field in ['v', 'add', 'port', 'id'])
         except:
             return False
     
+    # VLESS
     elif config.startswith('vless://'):
         try:
             parsed = urlparse(config)
-            return parsed.hostname and len(parsed.username) == 36
+            return parsed.hostname and parsed.username and len(parsed.username) == 36
         except:
             return False
     
+    # Trojan
     elif config.startswith('trojan://'):
         try:
             parsed = urlparse(config)
@@ -865,28 +907,93 @@ def validate_config_structure(config: str) -> bool:
         except:
             return False
     
+    # Shadowsocks
     elif config.startswith('ss://'):
         try:
-            # Проверка минимальной структуры
-            parts = config.split('://', 1)[1].split('#', 1)[0]
-            return len(parts) > 10
+            parts = config.split('@')
+            if len(parts) < 2:
+                return False
+            method_pass = base64.b64decode(parts[0][5:].split('#')[0] + '==').decode()
+            return '@' in method_pass and ':' in method_pass.split('@')[0]
         except:
             return False
     
-    elif config.startswith('hysteria://') or config.startswith('hy2://') or config.startswith('hysteria2://'):
+    # ShadowsocksR
+    elif config.startswith('ssr://'):
+        try:
+            encoded = config[6:].split('/')[0]
+            padding = '=' * (-len(encoded) % 4)
+            decoded = base64.b64decode(encoded + padding).decode()
+            return ':' in decoded and '/' in decoded
+        except:
+            return False
+    
+    # SOCKS5
+    elif config.startswith('socks5://'):
         try:
             parsed = urlparse(config)
-            return parsed.hostname is not None
+            return parsed.hostname and parsed.port
         except:
             return False
     
-    # Проверка IP:PORT формата
+    # HTTP/HTTPS
+    elif config.startswith(('http://', 'https://')):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname and parsed.port
+        except:
+            return False
+    
+    # Hysteria
+    elif config.startswith('hysteria://'):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname and parsed.port
+        except:
+            # Проверка JSON-формата
+            try:
+                data = json.loads(config)
+                return 'server' in data and ':' in data['server']
+            except:
+                return False
+    
+    # Hysteria2
+    elif config.startswith('hysteria2://'):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname and parsed.port
+        except:
+            return False
+    
+    # WireGuard
+    elif '[Interface]' in config and '[Peer]' in config:
+        try:
+            return re.search(r'Endpoint\s*=\s*[\w.-]+:\d+', config) is not None
+        except:
+            return False
+    
+    # OpenVPN
+    elif 'openvpn' in config.lower():
+        try:
+            return re.search(r'remote\s+[\w.-]+\s+\d+', config) is not None
+        except:
+            return False
+    
+    # Brook
+    elif config.startswith('brook://'):
+        try:
+            parsed = urlparse(config)
+            return parsed.hostname and parsed.port
+        except:
+            return False
+    
+    # Общий формат IP:PORT
     return bool(re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b', config))
 
 def resolve_dns(host: str) -> str:
     """Разрешение DNS с кэшированием"""
-    if host in cache['dns']:
-        return cache['dns'][host]
+    if host in dns_cache:
+        return dns_cache[host]
     
     try:
         if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
@@ -894,24 +1001,24 @@ def resolve_dns(host: str) -> str:
         else:
             ip = socket.gethostbyname(host)
         
-        cache['dns'][host] = ip
+        dns_cache[host] = ip
         return ip
     except socket.gaierror:
-        cache['dns'][host] = None
+        dns_cache[host] = None
         return None
     except Exception as e:
         logger.error(f"Ошибка разрешения DNS для {host}: {e}")
-        cache['dns'][host] = None
+        dns_cache[host] = None
         return None
 
 def geolocate_ip(ip: str) -> str:
     """Геолокация IP с кэшированием и повторными попытками"""
-    if ip in cache['geo']:
-        return cache['geo'][ip]
+    if ip in geo_cache:
+        return geo_cache[ip]
     
     try:
         if re.match(r'(^127\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)', ip):
-            cache['geo'][ip] = None
+            geo_cache[ip] = None
             return None
         
         for attempt in range(MAX_RETRIES):
@@ -921,7 +1028,7 @@ def geolocate_ip(ip: str) -> str:
                 
                 if data.get('status') == 'success':
                     country = data.get('country')
-                    cache['geo'][ip] = country
+                    geo_cache[ip] = country
                     return country
                 else:
                     break
@@ -936,7 +1043,7 @@ def geolocate_ip(ip: str) -> str:
     except Exception as e:
         logger.error(f"Общая ошибка геолокации для {ip}: {e}")
     
-    cache['geo'][ip] = None
+    geo_cache[ip] = None
     return None
 
 def detect_by_keywords(
@@ -991,7 +1098,37 @@ def detect_by_keywords(
         'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'委内瑞拉', r'加拉加ス'],
         "austria": [r'austria', r'vienna', r'\.at\b', r'奥地利', r'维也纳'],
         "belgium": [r'belgium', r'brussels', r'\.be\b', r'比利时', r'布鲁塞尔'],
-        "ireland": [r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林']
+        "ireland": [r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林'],
+        "algeria": [r'algeria', r'algiers', r'\.dz\b', r'الجزائر', r'阿尔及利亚'],
+        "angola": [r'angola', r'luanda', r'\.ao\b', r'安哥拉'],
+        "bangladesh": [r'bangladesh', r'dhaka', r'\.bd\b', r'孟加拉'],
+        "cambodia": [r'cambodia', r'phnom penh', r'\.kh\b', r'柬埔寨'],
+        "costa rica": [r'costa rica', r'san jose', r'\.cr\b', r'哥斯达黎加'],
+        "croatia": [r'croatia', r'zagreb', r'\.hr\b', r'克罗地亚'],
+        "cuba": [r'cuba', r'havana', r'\.cu\b', r'古巴'],
+        "estonia": [r'estonia', r'tallinn', r'\.ee\b', r'爱沙尼亚'],
+        "georgia": [r'georgia', r'tbilisi', r'\.ge\b', r'格鲁吉亚'],
+        "ghana": [r'ghana', r'accra', r'\.gh\b', r'加纳'],
+        "iran": [r'iran', r'tehran', r'\.ir\b', r'伊朗'],
+        "jordan": [r'jordan', r'ammam', r'\.jo\b', r'约旦'],
+        "kazakhstan": [r'kazakhstan', r'astana', r'\.kz\b', r'哈萨克斯坦'],
+        "kuwait": [r'kuwait', r'kuwait city', r'\.kw\b', r'科威特'],
+        "lebanon": [r'lebanon', r'beirut', r'\.lb\b', r'黎巴嫩'],
+        "libya": [r'libya', r'tripoli', r'\.ly\b', r'利比亚'],
+        "morocco": [r'morocco', r'rabat', r'\.ma\b', r'摩洛哥'],
+        "nepal": [r'nepal', r'kathmandu', r'\.np\b', r'尼泊尔'],
+        "oman": [r'oman', r'muscat', r'\.om\b', r'阿曼'],
+        "pakistan": [r'pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
+        "qatar": [r'qatar', r'doha', r'\.qa\b', r'卡塔尔'],
+        "serbia": [r'serbia', r'belgrade', r'\.rs\b', r'塞尔维亚'],
+        "slovakia": [r'slovakia', r'bratislava', r'\.sk\b', r'斯洛伐克'],
+        "slovenia": [r'slovenia', r'ljubljana', r'\.si\b', r'斯洛文尼亚'],
+        "sudan": [r'sudan', r'khartoum', r'\.sd\b', r'苏丹'],
+        "syria": [r'syria', r'damascus', r'\.sy\b', r'叙利亚'],
+        "tunisia": [r'tunisia', r'tunis', r'\.tn\b', r'突尼斯'],
+        "uruguay": [r'uruguay', r'montevideo', r'\.uy\b', r'乌拉圭'],
+        "uzbekistan": [r'uzbekistan', r'tashkent', r'\.uz\b', r'乌兹别克斯坦'],
+        "yemen": [r'yemen', r'sanaa', r'\.ye\b', r'也门']
     }
     
     if target_country in patterns:
@@ -1015,44 +1152,55 @@ def extract_host(config: str) -> str:
             json_data = json.loads(decoded)
             return json_data.get('host') or json_data.get('add', '')
         
-        # VLESS, Trojan, Hysteria
-        elif (config.startswith('vless://') or 
-              config.startswith('trojan://') or 
-              config.startswith('hysteria://') or
-              config.startswith('hy2://') or
-              config.startswith('hysteria2://')):
+        # VLESS/Trojan
+        elif config.startswith(('vless://', 'trojan://')):
             parsed = urlparse(config)
             return parsed.hostname
         
-        # ShadowSocks
+        # Shadowsocks
         elif config.startswith('ss://'):
-            try:
-                # Стандартный формат
-                parsed = urlparse(config)
-                if parsed.hostname:
-                    return parsed.hostname
-                
-                # Формат с base64 без @
-                base64_str = config[5:].split('#')[0].split('?')[0]
-                padding = '=' * (-len(base64_str) % 4)
-                decoded = base64.b64decode(base64_str + padding).decode('utf-8', errors='replace')
-                
-                if '@' in decoded:
-                    return decoded.split('@')[1].split(':')[0]
-                elif ':' in decoded:
-                    return decoded.split(':')[0]
-            except:
-                pass
-            
-            # Общий метод извлечения
-            return extract_domain(config)
+            parts = config.split('@')
+            if len(parts) < 2:
+                return None
+            host_port = parts[1].split('#')[0].split('/')[0]
+            return host_port.split(':')[0]
+        
+        # ShadowsocksR
+        elif config.startswith('ssr://'):
+            encoded = config[6:].split('/')[0]
+            padding = '=' * (-len(encoded) % 4)
+            decoded = base64.b64decode(encoded + padding).decode()
+            parts = decoded.split(':')
+            if len(parts) > 2:
+                return parts[0]
+            return None
+        
+        # SOCKS5/HTTP/HTTPS/Hysteria/Hysteria2/Brook
+        elif any(config.startswith(proto) for proto in [
+            'socks5://', 'http://', 'https://', 
+            'hysteria://', 'hysteria2://', 'brook://'
+        ]):
+            parsed = urlparse(config)
+            return parsed.hostname
+        
+        # WireGuard
+        elif '[Interface]' in config and '[Peer]' in config:
+            match = re.search(r'Endpoint\s*=\s*([\w.-]+):', config)
+            return match.group(1) if match else None
+        
+        # OpenVPN
+        elif 'openvpn' in config.lower():
+            match = re.search(r'remote\s+([\w.-]+)\s+\d+', config)
+            return match.group(1) if match else None
         
         # Общий случай
         else:
+            # Поиск IP:порт
             ip_match = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', config)
             if ip_match:
                 return ip_match.group(0)
             
+            # Поиск домена
             domain = extract_domain(config)
             if domain:
                 return domain
@@ -1102,9 +1250,7 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("check_configs", start_check)],
         states={
-            START: [
-                CallbackQueryHandler(start_choice)
-            ],
+            START: [CallbackQueryHandler(start_choice)],
             WAITING_FILE: [
                 MessageHandler(filters.Document.TEXT, handle_document),
                 MessageHandler(filters.ALL & ~filters.COMMAND, 
@@ -1114,18 +1260,10 @@ def main() -> None:
                 CallbackQueryHandler(button_handler),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_country)
             ],
-            WAITING_MODE: [
-                CallbackQueryHandler(button_handler)
-            ],
-            WAITING_NUMBER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number)
-            ],
-            SENDING_CONFIGS: [
-                CallbackQueryHandler(button_handler)
-            ],
-            PROCESSING_STRICT: [
-                CallbackQueryHandler(button_handler)
-            ]
+            WAITING_MODE: [CallbackQueryHandler(button_handler)],
+            WAITING_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number)],
+            SENDING_CONFIGS: [CallbackQueryHandler(button_handler)],
+            PROCESSING_STRICT: [CallbackQueryHandler(button_handler)]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
