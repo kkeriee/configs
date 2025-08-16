@@ -4,7 +4,6 @@ import logging
 import tempfile
 import base64
 import json
-import yaml
 import pycountry
 import requests
 import time
@@ -30,13 +29,17 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEURAL_API_KEY = os.getenv("NEURAL_API_KEY")
 MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
-GEOIP_API = "http://ip-api.com/json/"
-HEADERS = {'User-Agent': 'Telegram Multi-Protocol VPN Bot/4.0'}
+GEOIP_API = "https://ip-api.com/json/"
+HEADERS = {
+    'User-Agent': 'Telegram Multi-Protocol VPN Bot/4.0',
+    'Accept': 'application/json'
+}
 MAX_WORKERS = 15
-CHUNK_SIZE = 1000
+MAX_GEO_WORKERS = 5  # Уменьшено для геолокации
+CHUNK_SIZE = 500     # Уменьшено для стабильности
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
-GEOIP_TIMEOUT = 10
+GEOIP_TIMEOUT = 15   # Увеличен таймаут
 MAX_RETRIES = 3
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
@@ -694,6 +697,9 @@ async def strict_search(update: Update, context: CallbackContext):
                  f"Скорость: {len(chunk)/max(chunk_time, 0.1):.1f} конфиг/сек",
             reply_markup=stop_reply_markup
         )
+        
+        # Добавляем задержку для снижения нагрузки
+        await asyncio.sleep(1)
     
     context.user_data['strict_in_progress'] = False
     
@@ -841,7 +847,7 @@ def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
     """Проверка конфигов по геолокации IP"""
     valid_configs = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_GEO_WORKERS) as executor:
         futures = {executor.submit(validate_config_by_geolocation, config, target_country): config for config in configs}
         
         for future in concurrent.futures.as_completed(futures):
@@ -895,7 +901,8 @@ def validate_config_structure(config: str) -> bool:
     elif config.startswith('vless://'):
         try:
             parsed = urlparse(config)
-            return parsed.hostname and parsed.username and len(parsed.username) == 36
+            # Исправлено: разрешаем любой UUID
+            return parsed.hostname and parsed.username
         except:
             return False
     
@@ -999,11 +1006,12 @@ def resolve_dns(host: str) -> str:
         if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
             ip = host
         else:
-            ip = socket.gethostbyname(host)
+            # Добавляем таймаут для DNS запросов
+            ip = socket.gethostbyname_ex(host)[-1][0]
         
         dns_cache[host] = ip
         return ip
-    except socket.gaierror:
+    except (socket.gaierror, socket.timeout):
         dns_cache[host] = None
         return None
     except Exception as e:
@@ -1017,27 +1025,54 @@ def geolocate_ip(ip: str) -> str:
         return geo_cache[ip]
     
     try:
+        # Пропускаем приватные IP
         if re.match(r'(^127\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)', ip):
             geo_cache[ip] = None
             return None
         
+        # Повторные попытки
         for attempt in range(MAX_RETRIES):
             try:
-                response = requests.get(f"{GEOIP_API}{ip}", headers=HEADERS, timeout=GEOIP_TIMEOUT)
-                data = response.json()
+                response = requests.get(
+                    f"{GEOIP_API}{ip}", 
+                    headers=HEADERS, 
+                    timeout=GEOIP_TIMEOUT
+                )
+                
+                # Проверяем статус ответа
+                if response.status_code != 200:
+                    logger.warning(f"API геолокации вернул статус {response.status_code} для {ip}")
+                    continue
+                
+                # Проверяем тип содержимого
+                content_type = response.headers.get('Content-Type', '')
+                if 'application/json' not in content_type:
+                    logger.warning(f"API геолокации вернул не JSON: {content_type}")
+                    continue
+                
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    logger.error(f"Ошибка декодирования JSON для IP {ip}")
+                    continue
                 
                 if data.get('status') == 'success':
                     country = data.get('country')
                     geo_cache[ip] = country
                     return country
                 else:
+                    logger.warning(f"Неудачная геолокация для {ip}: {data.get('message')}")
                     break
+                    
             except requests.exceptions.Timeout:
                 logger.warning(f"Таймаут геолокации для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(1)
+                    time.sleep(2)  # Увеличена задержка
             except requests.exceptions.RequestException as e:
                 logger.error(f"Ошибка геолокации для {ip}: {e}")
+                break
+            except Exception as e:
+                logger.error(f"Неожиданная ошибка геолокации для {ip}: {e}")
                 break
     
     except Exception as e:
