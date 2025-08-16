@@ -29,18 +29,21 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEURAL_API_KEY = os.getenv("NEURAL_API_KEY")
 MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
-GEOIP_API = "https://ip-api.com/json/"
+GEOIP_API = [
+    "https://ipapi.co/{ip}/json/",
+    "https://ip-api.com/json/{ip}",
+]
 HEADERS = {
-    'User-Agent': 'Telegram Multi-Protocol VPN Bot/4.0',
+    'User-Agent': 'Telegram VPN Bot/5.0 (https://github.com/your-repo)',
     'Accept': 'application/json'
 }
 MAX_WORKERS = 15
-MAX_GEO_WORKERS = 5  # Уменьшено для геолокации
-CHUNK_SIZE = 500     # Уменьшено для стабильности
+MAX_GEO_WORKERS = 3  # Оптимальное количество для геолокации
+CHUNK_SIZE = 100     # Уменьшено для стабильности
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
-GEOIP_TIMEOUT = 15   # Увеличен таймаут
-MAX_RETRIES = 5  # Увеличение количества попыток
+GEOIP_TIMEOUT = 20   # Увеличен таймаут
+MAX_RETRIES = 5
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
     'https', 'hysteria', 'hysteria2', 'wg', 'openvpn', 'brook'
@@ -78,6 +81,7 @@ instruction_cache = {}
 country_normalization_cache = {}
 neural_improvement_cache = {}
 protocol_cache = {}
+api_rotation_index = 0  # Для ротации между API
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -268,7 +272,7 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны ( нейросеть отключена)"
+        return "Инструкции недоступны (нейросеть отключена)"
     
     if country in instruction_cache:
         return instruction_cache[country]
@@ -699,7 +703,7 @@ async def strict_search(update: Update, context: CallbackContext):
         )
         
         # Добавляем задержку для снижения нагрузки
-        await asyncio.sleep(1)
+        await asyncio.sleep(3)
     
     context.user_data['strict_in_progress'] = False
     
@@ -863,7 +867,6 @@ def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
 def validate_config_by_geolocation(config: str, target_country: str) -> bool:
     """Проверка конфига по геолокации IP"""
     try:
-        # Убрана избыточная проверка структуры конфига
         host = extract_host(config)
         if not host:
             return False
@@ -914,7 +917,9 @@ def resolve_dns(host: str) -> str:
         return None
 
 def geolocate_ip(ip: str) -> str:
-    """Геолокация IP с кэшированием"""
+    """Геолокация IP с кэшированием и ротацией API"""
+    global api_rotation_index
+    
     if ip in geo_cache:
         return geo_cache[ip]
     
@@ -924,11 +929,15 @@ def geolocate_ip(ip: str) -> str:
             geo_cache[ip] = None
             return None
         
+        # Ротация между API
+        current_api = GEOIP_API[api_rotation_index]
+        api_url = current_api.format(ip=ip)
+        
         # Повторные попытки
         for attempt in range(MAX_RETRIES):
             try:
                 response = requests.get(
-                    f"{GEOIP_API}{ip}", 
+                    api_url, 
                     headers=HEADERS, 
                     timeout=GEOIP_TIMEOUT
                 )
@@ -936,38 +945,56 @@ def geolocate_ip(ip: str) -> str:
                 # Проверяем статус ответа
                 if response.status_code != 200:
                     logger.warning(f"API геолокации вернул статус {response.status_code} для {ip}")
+                    # Переключаем API при ошибке
+                    api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                    time.sleep(2)
                     continue
                 
                 # Проверяем тип содержимого
                 content_type = response.headers.get('Content-Type', '')
                 if 'application/json' not in content_type:
                     logger.warning(f"API геолокации вернул не JSON: {content_type}")
+                    api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                    time.sleep(2)
                     continue
                 
                 try:
                     data = response.json()
                 except json.JSONDecodeError:
                     logger.error(f"Ошибка декодирования JSON для IP {ip}")
+                    api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                    time.sleep(2)
                     continue
                 
-                if data.get('status') == 'success':
-                    country = data.get('country')
-                    geo_cache[ip] = country
-                    return country
-                else:
-                    logger.warning(f"Неудачная геолокация для {ip}: {data.get('message')}")
-                    break
+                # Обработка разных API
+                if 'ip-api.com' in api_url:
+                    if data.get('status') == 'success':
+                        country = data.get('country')
+                        geo_cache[ip] = country
+                        return country
+                elif 'ipapi.co' in api_url:
+                    if data.get('error') is None:
+                        country = data.get('country_name')
+                        if country:
+                            geo_cache[ip] = country
+                            return country
+                
+                logger.warning(f"Неудачная геолокация для {ip}: {data}")
+                break
                     
             except requests.exceptions.Timeout:
                 logger.warning(f"Таймаут геолокации для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(3)  # Увеличена задержка
+                    time.sleep(5)
             except requests.exceptions.RequestException as e:
                 logger.error(f"Ошибка геолокации для {ip}: {e}")
-                break
+                api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(5)
             except Exception as e:
                 logger.error(f"Неожиданная ошибка геолокации для {ip}: {e}")
-                break
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(5)
     
     except Exception as e:
         logger.error(f"Общая ошибка геолокации для {ip}: {e}")
