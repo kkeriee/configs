@@ -38,12 +38,12 @@ HEADERS = {
     'Accept': 'application/json'
 }
 MAX_WORKERS = 15
-MAX_GEO_WORKERS = 15  # Увеличенное количество воркеров
+MAX_GEO_WORKERS = 5  # Уменьшенное количество воркеров
 CHUNK_SIZE = 100
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
-GEOIP_TIMEOUT = 20
-MAX_RETRIES = 5
+GEOIP_TIMEOUT = 30  # Увеличенный таймаут
+MAX_RETRIES = 8     # Увеличенное количество попыток
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
     'https', 'hysteria', 'hysteria2', 'wg', 'openvpn', 'brook'
@@ -270,7 +270,7 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны (нейросеть отключена)"
+        return "Инструкции недоступны ( нейросеть отключена)"
     
     if country in instruction_cache:
         return instruction_cache[country]
@@ -940,11 +940,19 @@ def geolocate_ip(ip: str) -> str:
                 )
                 
                 # Проверяем статус ответа
-                if response.status_code != 200:
+                if response.status_code == 429:
+                    logger.warning(f"API геолокации вернул статус 429 для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
+                    # Увеличиваем задержку для 429
+                    wait_time = 10  # секунд
+                    time.sleep(wait_time)
+                    # Пробуем другой API
+                    api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                    continue
+                elif response.status_code != 200:
                     logger.warning(f"API геолокации вернул статус {response.status_code} для {ip}")
                     # Переключаем API при ошибке
                     api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                 
                 # Проверяем тип содержимого
@@ -952,7 +960,7 @@ def geolocate_ip(ip: str) -> str:
                 if 'application/json' not in content_type:
                     logger.warning(f"API геолокации вернул не JSON: {content_type}")
                     api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                 
                 try:
@@ -960,7 +968,7 @@ def geolocate_ip(ip: str) -> str:
                 except json.JSONDecodeError:
                     logger.error(f"Ошибка декодирования JSON для IP {ip}")
                     api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                 
                 # Обработка разных API
@@ -977,12 +985,15 @@ def geolocate_ip(ip: str) -> str:
                             return country
                 
                 logger.warning(f"Неудачная геолокация для {ip}: {data}")
-                break
+                # Пробуем другой API
+                api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
+                time.sleep(5)
+                continue
                     
             except requests.exceptions.Timeout:
                 logger.warning(f"Таймаут геолокации для {ip} (попытка {attempt+1}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(5)
+                    time.sleep(10)  # Увеличенная задержка при таймауте
             except requests.exceptions.RequestException as e:
                 logger.error(f"Ошибка геолокации для {ip}: {e}")
                 api_rotation_index = (api_rotation_index + 1) % len(GEOIP_API)
@@ -1084,10 +1095,12 @@ def detect_by_keywords(
         "yemen": [r'yemen', r'sanaa', r'\.ye\b', r'也门']
     }
     
+    # Добавляем улучшенные ключевые слова
     if target_country in patterns:
         patterns[target_country].extend(additional_keywords)
         patterns[target_country].extend(additional_patterns)
     
+    # Быстрая проверка по ключевым словам
     if target_country in patterns:
         for pattern in patterns[target_country]:
             if re.search(pattern, config, re.IGNORECASE):
