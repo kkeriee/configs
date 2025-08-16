@@ -38,11 +38,11 @@ HEADERS = {
     'Accept': 'application/json'
 }
 MAX_WORKERS = 15
-MAX_GEO_WORKERS = 3  # Оптимальное количество для геолокации
-CHUNK_SIZE = 100     # Уменьшено для стабильности
+MAX_GEO_WORKERS = 15  # Увеличенное количество воркеров
+CHUNK_SIZE = 100
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
-GEOIP_TIMEOUT = 20   # Увеличен таймаут
+GEOIP_TIMEOUT = 20
 MAX_RETRIES = 5
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
@@ -103,7 +103,6 @@ def normalize_text(text: str) -> str:
         return country_normalization_cache[text]
     
     ru_en_map = {
-        # Существующие страны
         "россия": "russia", "русский": "russia", "рф": "russia", "ру": "russia",
         "сша": "united states", "америка": "united states", "usa": "united states", 
         "us": "united states", "соединенные штаты": "united states", "соединённые штаты": "united states",
@@ -162,7 +161,6 @@ def normalize_text(text: str) -> str:
         "австрия": "austria", "at": "austria", "австр": "austria",
         "бельгия": "belgium", "be": "belgium", "бельг": "belgium",
         "ирландия": "ireland", "ie": "ireland", "ирл": "ireland",
-        # Дополнительные страны
         "алжир": "algeria", "dz": "algeria", "алж": "algeria",
         "ангола": "angola", "ao": "angola", "анг": "angola",
         "бангладеш": "bangladesh", "bd": "bangladesh", "банг": "bangladesh",
@@ -610,6 +608,13 @@ async def fast_search(update: Update, context: CallbackContext):
     )
     return WAITING_NUMBER
 
+def get_country_for_host(host: str) -> str:
+    """Получение страны для хоста"""
+    ip = resolve_dns(host)
+    if not ip:
+        return None
+    return geolocate_ip(ip)
+
 async def strict_search(update: Update, context: CallbackContext):
     """Строгий поиск конфигов с проверкой геолокации"""
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
@@ -661,77 +666,107 @@ async def strict_search(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
     
-    total_chunks = (len(prelim_configs) + CHUNK_SIZE - 1) // CHUNK_SIZE
-    stop_keyboard = [[InlineKeyboardButton("⏹ Остановить строгий поиск", callback_data='stop_strict_search')]]
-    stop_reply_markup = InlineKeyboardMarkup(stop_keyboard)
-    
-    await context.bot.edit_message_text(
-        chat_id=user_id,
-        message_id=progress_msg.message_id,
-        text=f"🌐 Начинаю проверку геолокации {len(prelim_configs)} конфигов...\n"
-        f"Всего секторов: {total_chunks}",
-        reply_markup=stop_reply_markup
-    )
-    
-    start_time = time.time()
-    strict_matched_configs = []
-    context.user_data['strict_in_progress'] = True
-    
-    for chunk_idx in range(total_chunks):
-        if context.user_data.get('stop_strict_search'):
-            break
-            
-        start_idx = chunk_idx * CHUNK_SIZE
-        end_idx = min((chunk_idx+1) * CHUNK_SIZE, len(prelim_configs))
-        chunk = prelim_configs[start_idx:end_idx]
-        chunk_start_time = time.time()
-        
-        valid_configs = validate_configs_by_geolocation(chunk, target_country)
-        strict_matched_configs.extend(valid_configs)
-        
-        chunk_time = time.time() - chunk_start_time
-        chunk_progress = min((chunk_idx + 1) / total_chunks * 100, 100)
-        progress_bar = create_progress_bar(chunk_progress)
+    # Группировка конфигов по хостам
+    host_to_configs = {}
+    configs_without_host = 0
+    for config in prelim_configs:
+        host = extract_host(config)
+        if host:
+            if host not in host_to_configs:
+                host_to_configs[host] = []
+            host_to_configs[host].append(config)
+        else:
+            configs_without_host += 1
+
+    unique_hosts = list(host_to_configs.keys())
+    total_hosts = len(unique_hosts)
+
+    logger.info(f"Уникальных хостов: {total_hosts}, конфигов без хоста: {configs_without_host}")
+
+    if not unique_hosts:
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
-            text=f"🌐 Этап 2: {progress_bar} {chunk_progress:.1f}%\n"
-                 f"Обработан сектор: {chunk_idx+1}/{total_chunks}\n"
-                 f"Найдено: {len(valid_configs)} | Всего: {len(strict_matched_configs)}\n"
-                 f"Скорость: {len(chunk)/max(chunk_time, 0.1):.1f} конфиг/сек",
-            reply_markup=stop_reply_markup
+            text="❌ Не удалось извлечь хосты из конфигов."
         )
-        
-        # Добавляем задержку для снижения нагрузки
-        await asyncio.sleep(3)
-    
+        return ConversationHandler.END
+
+    stop_keyboard = [[InlineKeyboardButton("⏹ Остановить строгий поиск", callback_data='stop_strict_search')]]
+    stop_reply_markup = InlineKeyboardMarkup(stop_keyboard)
+
+    await context.bot.edit_message_text(
+        chat_id=user_id,
+        message_id=progress_msg.message_id,
+        text=f"🌐 Начинаю проверку геолокации для {total_hosts} уникальных хостов...",
+        reply_markup=stop_reply_markup
+    )
+
+    context.user_data['strict_in_progress'] = True
+    host_country_map = {}
+    total_processed = 0
+
+    # Проверка геолокации для уникальных хостов
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_GEO_WORKERS) as executor:
+        future_to_host = {executor.submit(get_country_for_host, host): host for host in unique_hosts}
+
+        for future in concurrent.futures.as_completed(future_to_host):
+            if context.user_data.get('stop_strict_search'):
+                break
+
+            host = future_to_host[future]
+            total_processed += 1
+            try:
+                country = future.result()
+                host_country_map[host] = country
+            except Exception as e:
+                logger.error(f"Ошибка проверки хоста {host}: {e}")
+                host_country_map[host] = None
+
+            # Обновление прогресса
+            if total_processed % 10 == 0 or total_processed == total_hosts:
+                progress = total_processed / total_hosts * 100
+                progress_bar = create_progress_bar(progress)
+                await context.bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=progress_msg.message_id,
+                    text=f"🌐 Этап 2: {progress_bar} {progress:.1f}%\nОбработано хостов: {total_processed}/{total_hosts}",
+                    reply_markup=stop_reply_markup
+                )
+
     context.user_data['strict_in_progress'] = False
-    
+
+    # Сбор валидных конфигов
+    valid_configs = []
+    for host in unique_hosts:
+        country = host_country_map.get(host)
+        if country and country.lower() == target_country.lower():
+            valid_configs.extend(host_to_configs[host])
+
     total_time = time.time() - start_time
-    logger.info(f"Строгая проверка завершена: найдено {len(strict_matched_configs)} конфигов, заняло {total_time:.2f} сек")
+    logger.info(f"Строгая проверка завершена: найдено {len(valid_configs)} конфигов, заняло {total_time:.2f} сек")
     
     if context.user_data.get('stop_strict_search'):
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
-            text=f"⏹ Строгий поиск остановлен. Найдено {len(strict_matched_configs)} конфигов."
+            text=f"⏹ Строгий поиск остановлен. Найдено {len(valid_configs)} конфигов."
         )
     else:
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
-            text=f"✅ Строгий поиск завершен. Найдено {len(strict_matched_configs)} конфигов."
+            text=f"✅ Строгий поиск завершен. Найдено {len(valid_configs)} конфигов."
         )
     
-    if not strict_matched_configs:
+    if not valid_configs:
         await context.bot.send_message(chat_id=user_id, text="❌ Конфигурации не найдены.")
         return ConversationHandler.END
     
-    context.user_data['matched_configs'] = strict_matched_configs
+    context.user_data['matched_configs'] = valid_configs
     
     await context.bot.send_message(
         chat_id=user_id,
-        text=f"🌍 Для страны {context.user_data['country']} найдено {len(strict_matched_configs)} валидных конфигов! Сколько конфигов прислать? (введите число от 1 до {len(strict_matched_configs)})"
+        text=f"🌍 Для страны {context.user_data['country']} найдено {len(valid_configs)} валидных конфигов! Сколько конфигов прислать? (введите число от 1 до {len(valid_configs)})"
     )
     return WAITING_NUMBER
 
@@ -846,44 +881,6 @@ def is_config_relevant(
             return True
     
     return False
-
-def validate_configs_by_geolocation(configs: list, target_country: str) -> list:
-    """Проверка конфигов по геолокации IP"""
-    valid_configs = []
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_GEO_WORKERS) as executor:
-        futures = {executor.submit(validate_config_by_geolocation, config, target_country): config for config in configs}
-        
-        for future in concurrent.futures.as_completed(futures):
-            config = futures[future]
-            try:
-                if future.result():
-                    valid_configs.append(config)
-            except Exception as e:
-                logger.error(f"Ошибка проверки конфига: {e}")
-    
-    return valid_configs
-
-def validate_config_by_geolocation(config: str, target_country: str) -> bool:
-    """Проверка конфига по геолокации IP"""
-    try:
-        host = extract_host(config)
-        if not host:
-            return False
-        
-        ip = resolve_dns(host)
-        if not ip:
-            return False
-        
-        country = geolocate_ip(ip)
-        if not country:
-            return False
-        
-        return country.lower() == target_country.lower()
-    
-    except Exception as e:
-        logger.error(f"Ошибка проверки конфига: {e}")
-        return False
 
 def resolve_dns(host: str) -> str:
     """Разрешение DNS с кэшированием и повторными попытками"""
