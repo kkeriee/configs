@@ -6,3 +6,4 @@ openai
 python-telegram-bot[webhooks]
 PyYAML
 maxminddb==1.5.1
+aiohttp
