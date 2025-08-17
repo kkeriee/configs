@@ -25,7 +25,6 @@ from telegram.ext import (
 )
 from openai import OpenAI
 import maxminddb
-import aiodns
 import dns.asyncresolver
 
 # Конфигурация
@@ -73,7 +72,7 @@ if NEURAL_API_KEY:
     )
     logger.info("Нейросеть DeepSeek-R1 инициализирована")
 else:
-    logger.warning("NEURAL_API_KEY не установлен, функции нейросети отключены")
+    logger.warning("NEURAL_API_KEY не установен, функции нейросети отключены")
 
 # Инициализация DNS-резолвера
 resolver = dns.asyncresolver.Resolver()
@@ -407,7 +406,7 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны (нейросеть отключена)"
+        return "Инструкции недоступны ( нейросеть отключена)"
     
     # Проверяем кэш
     if country in instruction_cache:
