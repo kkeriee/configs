@@ -44,8 +44,7 @@ SUPPORTED_PROTOCOLS = {
 }
 
 # URL для скачивания базы геолокации
-DB_IP_URL = "https://download.db-ip.com/free/dbip-country-lite-2025-07.mmdb.gz"
-DB_IP_FILENAME = "dbip-country-lite.mmdb"
+DB_IP_URL = "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb"
 
 # Состояния диалога
 (START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, 
@@ -84,29 +83,33 @@ protocol_cache = {}
 geoip_reader = None
 
 def initialize_geoip_database_sync():
-    """Синхронная инициализация базы геолокации"""
+    """Синхронная инициализация базы геолокации напрямую в память"""
     global geoip_reader
     
     try:
-        # Скачивание базы данных
         logger.info(f"Скачивание базы геолокации: {DB_IP_URL}")
-        response = requests.get(DB_IP_URL, timeout=60)
-        response.raise_for_status()
-        
-        # Распаковка и загрузка в память
-        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
-            db_content = gz_file.read()
-        
-        # Используем байты для работы с данными в памяти
-        geoip_reader = maxminddb.open_database(
-            db_content, 
-            maxminddb.MODE_MEMORY
-        )
-        
-        logger.info("База геолокации успешно загружена в память")
-        return True
+        # Повторные попытки скачивания
+        for attempt in range(3):
+            try:
+                response = requests.get(DB_IP_URL, timeout=60)
+                response.raise_for_status()
+                logger.info(f"База успешно скачана ({len(response.content)} байт)")
+                
+                # Загрузка базы напрямую из памяти
+                geoip_reader = maxminddb.open_database(
+                    io.BytesIO(response.content), 
+                    maxminddb.MODE_MEMORY
+                )
+                
+                logger.info("База геолокации успешно загружена в память")
+                return True
+            except Exception as e:
+                logger.warning(f"Ошибка скачивания (попытка {attempt+1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(5)
+        return False
     except Exception as e:
-        logger.error(f"Ошибка инициализации базы геолокации: {e}")
+        logger.error(f"Критическая ошибка инициализации базы: {e}")
         return False
 
 async def initialize_geoip_database():
