@@ -83,8 +83,8 @@ protocol_cache = {}
 # Инициализация базы геолокации
 geoip_reader = None
 
-async def initialize_geoip_database():
-    """Инициализация базы геолокации при запуске"""
+def initialize_geoip_database_sync():
+    """Синхронная инициализация базы геолокации"""
     global geoip_reader
     
     try:
@@ -97,10 +97,9 @@ async def initialize_geoip_database():
         with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
             db_content = gz_file.read()
         
-        # Используем BytesIO для работы с данными в памяти
-        buffer = io.BytesIO(db_content)
+        # Используем байты для работы с данными в памяти
         geoip_reader = maxminddb.open_database(
-            buffer, 
+            db_content, 
             maxminddb.MODE_MEMORY
         )
         
@@ -109,6 +108,11 @@ async def initialize_geoip_database():
     except Exception as e:
         logger.error(f"Ошибка инициализации базы геолокации: {e}")
         return False
+
+async def initialize_geoip_database():
+    """Асинхронная обертка для инициализации базы геолокации"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, initialize_geoip_database_sync)
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -1018,7 +1022,7 @@ def detect_by_keywords(
         'thailand': [r'thailand', r'bangkok', r'\.th\b', r'泰国', r'曼谷'],
         'czech republic': [r'czech', r'prague', r'\.cz\b', r'捷克', r'布拉格'],
         'romania': [r'romania', r'bucharest', r'\.ro\b', r'罗马尼亚', r'布加勒斯特'],
-        'hungary': [r'hungary', r'budapest', r'\.hu\b', r'匈牙利', r'布达佩斯'],
+        'hungary': [r'hungary', r'budapest', r'\.hu\b', r'匈牙利', r'布达佩ス'],
         'greece': [r'greece', r'athens', r'\.gr\b', r'希腊', r'雅典'],
         'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'保加利亚', r'索非а'],
         'egypt': [r'egypt', r'cairo', r'\.eg\b', r'埃及', r'开罗'],
@@ -1197,17 +1201,23 @@ async def cancel(update: Update, context: CallbackContext):
     await update.message.reply_text("Операция отменена.")
     return ConversationHandler.END
 
-def main() -> None:
-    """Основная функция запуска бота"""
-    # Инициализация базы геолокации
+async def post_init(application: Application):
+    """Инициализация после запуска приложения"""
+    # Создаем новый цикл событий для инициализации базы геолокации
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        # Используем asyncio.run для запуска асинхронной функции из синхронного контекста
-        if not asyncio.run(initialize_geoip_database()):
+        if not await initialize_geoip_database():
             logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
     except Exception as e:
-        logger.error(f"Ошибка инициализации базы геолокации: {e}")
-    
-    application = Application.builder().token(TOKEN).build()
+        logger.error(f"Ошибка при инициализации базы геолокации: {e}")
+    finally:
+        loop.close()
+
+def main() -> None:
+    """Основная функция запуска бота"""
+    # Создаем приложение с обработчиком post_init
+    application = Application.builder().token(TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("check_configs", start_check)],
