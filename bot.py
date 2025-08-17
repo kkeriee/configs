@@ -815,12 +815,11 @@ async def handle_number(update: Update, context: CallbackContext):
         random.shuffle(matched_configs)
         selected_configs = matched_configs[:num]
         context.user_data['matched_configs'] = selected_configs
-        context.user_data['current_index'] = 0
         context.user_data['stop_sending'] = False
         context.user_data['progress_last_update'] = time.time()
         await update.message.reply_text(f"⏫ Начинаю отправку {num} конфигов...")
         await send_configs(update, context)
-        return SENDING_CONFIGS
+        return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите число.")
         return WAITING_NUMBER
@@ -842,17 +841,25 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     # Подготавливаем сообщения
-    header = f"Конфиги для {country_name}:\n"
+    header = f"Конфиги для {country_name}:\n\n"
     messages = []
     current_message = header
     for config in matched_configs:
         config_line = f"{config}\n"
+        # Проверяем, не превысит ли добавление этой строки лимит
         if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
             messages.append(current_message)
-            current_message = config_line
+            current_message = header + config_line  # Начинаем новое сообщение с заголовка
+            # Если даже одна строка конфига слишком длинная
+            if len(current_message) > MAX_MSG_LENGTH:
+                # Разбиваем длинный конфиг на части
+                for i in range(0, len(config_line), MAX_MSG_LENGTH - len(header)):
+                    part = config_line[i:i + MAX_MSG_LENGTH - len(header)]
+                    messages.append(header + part)
+                current_message = header
         else:
             current_message += config_line
-    if current_message:
+    if len(current_message) > len(header):  # Убедимся, что сообщение не пустое
         messages.append(current_message)
     total_messages = len(messages)
     # Отправляем сообщения
@@ -863,7 +870,7 @@ async def send_configs(update: Update, context: CallbackContext):
         try:
             # Добавляем прогресс в последнее сообщение
             if i == total_messages - 1:
-                progress = f"\n⌛ Отправлено {i+1}/{total_messages} сообщений"
+                progress = f"\n\n⌛ Отправлено {i+1}/{total_messages} сообщений"
                 if len(message) + len(progress) <= MAX_MSG_LENGTH:
                     message += progress
             # Отправляем сообщение
@@ -979,7 +986,7 @@ def detect_by_keywords(config: str, target_country: str) -> bool:
         "morocco": [r'morocco', r'rabat', r'\.ma\b', r'摩洛哥'],
         "nepal": [r'nepal', r'kathmandu', r'\.np\b', r'尼泊尔'],
         "oman": [r'oman', r'muscat', r'\.om\b', r'阿曼'],
-        "pakistan": [r' pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
+        "pakistan": [r'pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
         "qatar": [r'qatar', r'doha', r'\.qa\b', r'卡塔尔'],
         "serbia": [r'serbia', r'belgrade', r'\.rs\b', r'塞尔维я'],
         "slovakia": [r'slovakia', r'bratislava', r'\.sk\b', r'斯洛伐克'],
