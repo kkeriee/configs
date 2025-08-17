@@ -95,10 +95,10 @@ def initialize_geoip_database_sync():
                 response.raise_for_status()
                 logger.info(f"База успешно скачана ({len(response.content)} байт)")
                 
-                # Загрузка базы напрямую из памяти
+                # ЗАГРУЗКА БАЗЫ НЕПОСРЕДСТВЕННО ИЗ БАЙТОВ (ИСПРАВЛЕНИЕ)
                 geoip_reader = maxminddb.open_database(
-                    io.BytesIO(response.content), 
-                    maxminddb.MODE_MEMORY
+                    database=response.content, 
+                    mode=maxminddb.MODE_MEMORY
                 )
                 
                 logger.info("База геолокации успешно загружена в память")
