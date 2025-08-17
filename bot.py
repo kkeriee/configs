@@ -11,7 +11,9 @@ import socket
 import concurrent.futures
 import asyncio
 import random
-from urllib.parse import urlparse, unquote
+import gzip
+import io
+from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,70 +25,27 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from openai import OpenAI
+import maxminddb
 
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEURAL_API_KEY = os.getenv("NEURAL_API_KEY")
 MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
-HEADERS = {
-    'User-Agent': 'Telegram VPN Bot/5.0 (https://github.com/your-repo)',
-    'Accept': 'application/json'
-}
 MAX_WORKERS = 15
+MAX_GEO_WORKERS = 5
 CHUNK_SIZE = 100
 NEURAL_MODEL = "deepseek/deepseek-r1-0528"
 NEURAL_TIMEOUT = 15
+MAX_RETRIES = 8
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
     'https', 'hysteria', 'hysteria2', 'wg', 'openvpn', 'brook'
 }
 
-# TLD exceptions for country mapping
-TLD_EXCEPTIONS = {
-    'uk': 'GB',    # United Kingdom
-    'ac': 'SH',    # Ascension Island
-    'eu': 'EU',    # European Union
-    'su': 'RU',    # Soviet Union (Russia)
-    'tp': 'TL',    # East Timor (old code)
-    'yu': 'RS',    # Yugoslavia (Serbia)
-    'com': 'US',   # Commercial (US)
-    'org': 'US',   # Organization (US)
-    'net': 'US',   # Network (US)
-    'int': 'EU',   # International (EU)
-    'gov': 'US',   # US Government
-    'mil': 'US',   # US Military
-    'edu': 'US',   # Education (primarily US)
-    'io': 'GB',    # British Indian Ocean Territory
-    'ai': 'AI',    # Anguilla
-    'cx': 'CX',    # Christmas Island
-    'im': 'IM',    # Isle of Man
-    'co': 'CO',    # Colombia
-    'cc': 'CC',    # Cocos Islands
-    'tv': 'TV',    # Tuvalu
-    'me': 'ME',    # Montenegro
-    'nu': 'NU',    # Niue
-    'tk': 'TK',    # Tokelau
-    'fm': 'FM',    # Micronesia
-    'to': 'TO',    # Tonga
-    'ms': 'MS',    # Montserrat
-    'vg': 'VG',    # British Virgin Islands
-    'je': 'JE',    # Jersey
-    'gg': 'GG',    # Guernsey
-    'as': 'AS',    # American Samoa
-    'sm': 'SM',    # San Marino
-    'la': 'LA',    # Laos
-    'mn': 'MN',    # Mongolia
-    'na': 'NA',    # Namibia
-    'ph': 'PH',    # Philippines
-    'pk': 'PK',    # Pakistan
-    'in': 'IN',    # India
-    'id': 'ID',    # Indonesia
-    'th': 'TH',    # Thailand
-    'vn': 'VN',    # Vietnam
-    'my': 'MY',    # Malaysia
-    'sg': 'SG',    # Singapore
-}
+# URL для скачивания базы геолокации
+DB_IP_URL = "https://download.db-ip.com/free/dbip-country-lite-2024-06.mmdb.gz"
+DB_IP_FILENAME = "dbip-country-lite.mmdb"
 
 # Состояния диалога
 (START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, 
@@ -114,11 +73,42 @@ else:
 # Кэширование
 country_cache = {}
 geo_cache = {}
+dns_cache = {}
 config_cache = {}
 instruction_cache = {}
 country_normalization_cache = {}
 neural_improvement_cache = {}
 protocol_cache = {}
+
+# Инициализация базы геолокации
+geoip_reader = None
+
+async def initialize_geoip_database():
+    """Инициализация базы геолокации при запуске"""
+    global geoip_reader
+    
+    try:
+        # Скачивание базы данных
+        logger.info(f"Скачивание базы геолокации: {DB_IP_URL}")
+        response = requests.get(DB_IP_URL, timeout=60)
+        response.raise_for_status()
+        
+        # Распаковка и загрузка в память
+        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
+            db_content = gz_file.read()
+        
+        # Используем BytesIO для работы с данными в памяти
+        buffer = io.BytesIO(db_content)
+        geoip_reader = maxminddb.open_database(
+            buffer, 
+            maxminddb.MODE_MEMORY
+        )
+        
+        logger.info("База геолокации успешно загружена в память")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка инициализации базы геолокации: {e}")
+        return False
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -645,53 +635,25 @@ async def fast_search(update: Update, context: CallbackContext):
     )
     return WAITING_NUMBER
 
-def get_country_by_domain(domain: str) -> str:
-    """Определение страны по домену (TLD)"""
-    if not domain:
+def get_country_for_host(host: str) -> str:
+    """Получение страны для хоста"""
+    ip = resolve_dns(host)
+    if not ip:
         return None
-    
-    # Проверка кэша
-    if domain in geo_cache:
-        return geo_cache[domain]
-    
-    # Извлечение TLD
-    tld = domain.split('.')[-1].lower()
-    
-    # Обработка исключений
-    if tld in TLD_EXCEPTIONS:
-        country_code = TLD_EXCEPTIONS[tld]
-    else:
-        country_code = tld.upper()
-    
-    # Поиск страны по коду
-    try:
-        country = pycountry.countries.get(alpha_2=country_code)
-        if country:
-            geo_cache[domain] = country.name
-            return country.name
-    except LookupError:
-        pass
-    
-    # Попытка неявного поиска
-    try:
-        country = pycountry.countries.search_fuzzy(country_code)
-        if country:
-            geo_cache[domain] = country[0].name
-            return country[0].name
-    except LookupError:
-        pass
-    
-    geo_cache[domain] = None
-    return None
+    return geolocate_ip(ip)
 
 async def strict_search(update: Update, context: CallbackContext):
-    """Строгий поиск конфигов с проверкой геолокации через TLD"""
+    """Строгий поиск конфигов с проверкой геолокации"""
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
     configs = context.user_data.get('configs', [])
     target_country = context.user_data.get('target_country', '')
     
     if not configs or not target_country:
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
+        return ConversationHandler.END
+    
+    if not geoip_reader:
+        await context.bot.send_message(chat_id=user_id, text="❌ База геолокации не загружена. Строгий поиск недоступен.")
         return ConversationHandler.END
     
     start_time = time.time()
@@ -735,28 +697,28 @@ async def strict_search(update: Update, context: CallbackContext):
         )
         return ConversationHandler.END
     
-    # Группировка конфигов по доменам
-    domain_to_configs = {}
-    configs_without_domain = 0
+    # Группировка конфигов по хостам
+    host_to_configs = {}
+    configs_without_host = 0
     for config in prelim_configs:
-        domain = extract_domain(config)
-        if domain:
-            if domain not in domain_to_configs:
-                domain_to_configs[domain] = []
-            domain_to_configs[domain].append(config)
+        host = extract_host(config)
+        if host:
+            if host not in host_to_configs:
+                host_to_configs[host] = []
+            host_to_configs[host].append(config)
         else:
-            configs_without_domain += 1
+            configs_without_host += 1
 
-    unique_domains = list(domain_to_configs.keys())
-    total_domains = len(unique_domains)
+    unique_hosts = list(host_to_configs.keys())
+    total_hosts = len(unique_hosts)
 
-    logger.info(f"Уникальных доменов: {total_domains}, конфигов без домена: {configs_without_domain}")
+    logger.info(f"Уникальных хостов: {total_hosts}, конфигов без хоста: {configs_without_host}")
 
-    if not unique_domains:
+    if not unique_hosts:
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
-            text="❌ Не удалось извлечь домены из конфигов."
+            text="❌ Не удалось извлечь хосты из конфигов."
         )
         return ConversationHandler.END
 
@@ -766,31 +728,36 @@ async def strict_search(update: Update, context: CallbackContext):
     await context.bot.edit_message_text(
         chat_id=user_id,
         message_id=progress_msg.message_id,
-        text=f"🌐 Проверяю геолокацию для {total_domains} доменов...",
+        text=f"🌐 Начинаю проверку геолокации для {total_hosts} уникальных хостов...",
         reply_markup=stop_reply_markup
     )
 
     context.user_data['strict_in_progress'] = True
-    domain_country_map = {}
+    host_country_map = {}
     total_processed = 0
 
-    # Проверка геолокации для уникальных доменов
-    for domain in unique_domains:
+    # Проверка геолокации для уникальных хостов
+    for host in unique_hosts:
         if context.user_data.get('stop_strict_search'):
             break
             
-        country = get_country_by_domain(domain)
-        domain_country_map[domain] = country
+        ip = resolve_dns(host)
+        if ip:
+            country = geolocate_ip(ip)
+            host_country_map[host] = country
+        else:
+            host_country_map[host] = None
+            
         total_processed += 1
         
         # Обновление прогресса
-        if total_processed % 10 == 0 or total_processed == total_domains:
-            progress = total_processed / total_domains * 100
+        if total_processed % 10 == 0 or total_processed == total_hosts:
+            progress = total_processed / total_hosts * 100
             progress_bar = create_progress_bar(progress)
             await context.bot.edit_message_text(
                 chat_id=user_id,
                 message_id=progress_msg.message_id,
-                text=f"🌐 Этап 2: {progress_bar} {progress:.1f}%\nОбработано доменов: {total_processed}/{total_domains}",
+                text=f"🌐 Этап 2: {progress_bar} {progress:.1f}%\nОбработано хостов: {total_processed}/{total_hosts}",
                 reply_markup=stop_reply_markup
             )
 
@@ -798,10 +765,10 @@ async def strict_search(update: Update, context: CallbackContext):
 
     # Сбор валидных конфигов
     valid_configs = []
-    for domain in unique_domains:
-        country = domain_country_map.get(domain)
+    for host in unique_hosts:
+        country = host_country_map.get(host)
         if country and country.lower() == target_country.lower():
-            valid_configs.extend(domain_to_configs[domain])
+            valid_configs.extend(host_to_configs[host])
 
     total_time = time.time() - start_time
     logger.info(f"Строгая проверка завершена: найдено {len(valid_configs)} конфигов, заняло {total_time:.2f} сек")
@@ -942,6 +909,74 @@ def is_config_relevant(
             return True
     
     return False
+
+def resolve_dns(host: str) -> str:
+    """Разрешение DNS с кэшированием и повторными попытками"""
+    if host in dns_cache:
+        return dns_cache[host]
+    
+    try:
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
+            ip = host
+        else:
+            # Повторные попытки с экспоненциальной задержкой
+            for attempt in range(MAX_RETRIES):
+                try:
+                    ip = socket.gethostbyname_ex(host)[-1][0]
+                    break
+                except (socket.gaierror, socket.timeout):
+                    if attempt < MAX_RETRIES - 1:
+                        delay = 2 ** attempt  # Экспоненциальная задержка
+                        time.sleep(delay)
+                    else:
+                        raise
+    
+        dns_cache[host] = ip
+        return ip
+    except (socket.gaierror, socket.timeout):
+        dns_cache[host] = None
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка разрешения DNS для {host}: {e}")
+        dns_cache[host] = None
+        return None
+
+def geolocate_ip(ip: str) -> str:
+    """Геолокация IP с использованием локальной базы данных"""
+    if not geoip_reader:
+        return None
+    
+    if ip in geo_cache:
+        return geo_cache[ip]
+    
+    try:
+        # Пропускаем приватные IP
+        if re.match(r'(^127\.)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)', ip):
+            geo_cache[ip] = None
+            return None
+        
+        try:
+            data = geoip_reader.get(ip)
+            if not data:
+                geo_cache[ip] = None
+                return None
+            
+            # Извлекаем название страны
+            country = data.get('country', {}).get('names', {}).get('en')
+            if not country:
+                country = data.get('registered_country', {}).get('names', {}).get('en')
+            
+            geo_cache[ip] = country
+            return country
+        except Exception as e:
+            logger.error(f"Ошибка геолокации для {ip}: {e}")
+            geo_cache[ip] = None
+            return None
+    
+    except Exception as e:
+        logger.error(f"Общая ошибка геолокации для {ip}: {e}")
+        geo_cache[ip] = None
+        return None
 
 def detect_by_keywords(
     config: str, 
@@ -1132,17 +1167,6 @@ def extract_host(config: str) -> str:
 def extract_domain(config: str) -> str:
     """Извлечение домена из конфига"""
     try:
-        # Сначала попробуем извлечь хост
-        host = extract_host(config)
-        if host:
-            # Если это IP - пропускаем
-            if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
-                return None
-            # Если домен - возвращаем его
-            if '.' in host:
-                return host
-        
-        # Прямой поиск домена в конфиге
         url_match = re.search(r'(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})', config, re.IGNORECASE)
         if url_match:
             return url_match.group(1)
@@ -1175,6 +1199,11 @@ async def cancel(update: Update, context: CallbackContext):
 
 def main() -> None:
     """Основная функция запуска бота"""
+    # Инициализация базы геолокации
+    loop = asyncio.get_event_loop()
+    if not loop.run_until_complete(initialize_geoip_database()):
+        logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
+    
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
