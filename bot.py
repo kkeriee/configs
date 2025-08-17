@@ -193,12 +193,117 @@ def clear_temporary_data(context: CallbackContext):
             del context.user_data[key]
 
 def normalize_text(text: str) -> str:
-    """Нормализация текста страны для поиска"""
-    text = text.lower().strip()
+    """Нормализация текста страны для поиска с поддержкой флагов"""
+    original_text = text
+    text = text.strip()
     
     # Проверка кэша нормализации
-    if text in country_normalization_cache:
-        return country_normalization_cache[text]
+    if text.lower() in country_normalization_cache:
+        return country_normalization_cache[text.lower()]
+    
+    # Словарь соответствия флагов странам
+    flag_country_map = {
+        "🇷🇺": "russia",
+        "🇺🇸": "united states",
+        "🇩🇪": "germany",
+        "🇯🇵": "japan",
+        "🇫🇷": "france",
+        "🇬🇧": "united kingdom",
+        "🇸🇬": "singapore",
+        "🇳🇱": "netherlands",
+        "🇨🇦": "canada",
+        "🇨🇭": "switzerland",
+        "🇸🇪": "sweden",
+        "🇦🇺": "australia",
+        "🇧🇷": "brazil",
+        "🇮🇳": "india",
+        "🇰🇷": "south korea",
+        "🇹🇷": "turkey",
+        "🇹🇼": "taiwan",
+        "🇿🇦": "south africa",
+        "🇦🇪": "united arab emirates",
+        "🇸🇦": "saudi arabia",
+        "🇮🇱": "israel",
+        "🇲🇽": "mexico",
+        "🇦🇷": "argentina",
+        "🇮🇹": "italy",
+        "🇪🇸": "spain",
+        "🇵🇹": "portugal",
+        "🇳🇴": "norway",
+        "🇫🇮": "finland",
+        "🇩🇰": "denmark",
+        "🇵🇱": "poland",
+        "🇺🇦": "ukraine",
+        "🇧🇾": "belarus",
+        "🇨🇳": "china",
+        "🇮🇩": "indonesia",
+        "🇲🇾": "malaysia",
+        "🇵🇭": "philippines",
+        "🇻🇳": "vietnam",
+        "🇹🇭": "thailand",
+        "🇨🇿": "czech republic",
+        "🇷🇴": "romania",
+        "🇭🇺": "hungary",
+        "🇬🇷": "greece",
+        "🇧🇬": "bulgaria",
+        "🇪🇬": "egypt",
+        "🇳🇬": "nigeria",
+        "🇰🇪": "kenya",
+        "🇨🇴": "colombia",
+        "🇵🇪": "peru",
+        "🇨🇱": "chile",
+        "🇻🇪": "venezuela",
+        "🇦🇹": "austria",
+        "🇧🇪": "belgium",
+        "🇮🇪": "ireland",
+        "🇩🇿": "algeria",
+        "🇦🇴": "angola",
+        "🇧🇩": "bangladesh",
+        "🇰🇭": "cambodia",
+        "🇨🇷": "costa rica",
+        "🇭🇷": "croatia",
+        "🇨🇺": "cuba",
+        "🇪🇪": "estonia",
+        "🇬🇪": "georgia",
+        "🇬🇭": "ghana",
+        "🇮🇷": "iran",
+        "🇯🇴": "jordan",
+        "🇰🇿": "kazakhstan",
+        "🇰🇼": "kuwait",
+        "🇱🇧": "lebanon",
+        "🇱🇾": "libya",
+        "🇲🇦": "morocco",
+        "🇳🇵": "nepal",
+        "🇴🇲": "oman",
+        "🇵🇰": "pakistan",
+        "🇶🇦": "qatar",
+        "🇷🇸": "serbia",
+        "🇸🇰": "slovakia",
+        "🇸🇮": "slovenia",
+        "🇸🇩": "sudan",
+        "🇸🇾": "syria",
+        "🇹🇳": "tunisia",
+        "🇺🇾": "uruguay",
+        "🇺🇿": "uzbekistan",
+        "🇾🇪": "yemen"
+    }
+    
+    # Проверка, состоит ли текст только из флага
+    for flag, country in flag_country_map.items():
+        if text == flag:
+            # Если текст - это флаг, возвращаем название страны
+            country_normalization_cache[text.lower()] = country
+            return country
+    
+    # Проверка наличия флага в тексте
+    for flag, country in flag_country_map.items():
+        if flag in text:
+            # Заменяем флаг на название страны
+            text = text.replace(flag, country)
+            break
+    
+    # Приводим к нижнему регистру для дальнейшей обработки
+    text = text.lower()
     
     # Расширенный словарь перевода
     ru_en_map = {
@@ -291,11 +396,13 @@ def normalize_text(text: str) -> str:
         "узбекистан": "uzbekistan", "uz": "uzbekistan", "узб": "uzbekistan",
         "йемен": "yemen", "ye": "yemen"
     }
+    
+    # Применяем основные правила нормализации
     for key, value in ru_en_map.items():
         text = text.replace(key, value)
     
     # Сохраняем в кэш
-    country_normalization_cache[text] = text
+    country_normalization_cache[original_text.lower().strip()] = text
     return text
 
 async def neural_normalize_country(text: str) -> str:
@@ -531,10 +638,10 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
         await query.edit_message_text("📎 Пожалуйста, загрузите дополнительный файл с конфигурациями.")
         return WAITING_FILE
     elif query.data == 'set_country':
-        await query.edit_message_text("🌍 Введите название страны (на русском или английском):")
+        await query.edit_message_text("🌍 Введите название страны (на русском, английском или отправьте флаг):")
         return WAITING_COUNTRY
     elif query.data == 'use_current_file':
-        await query.edit_message_text("🌍 Введите название страны (на русском или английском):")
+        await query.edit_message_text("🌍 Введите название страны (на русском, английском или отправьте флаг):")
         return WAITING_COUNTRY
     elif query.data == 'new_file':
         await query.edit_message_text("📎 Пожалуйста, загрузите текстовый файл с конфигурациями.")
@@ -572,7 +679,7 @@ async def handle_country(update: Update, context: CallbackContext):
     if len(country_request) > 50 or not re.match(r'^[\w\s\-.,]+$', country_request):
         await update.message.reply_text(
             "❌ Некорректный запрос. Пожалуйста, введите название страны.\n"
-            "Примеры: 'США', 'Германия', 'Japan', 'UK'"
+            "Примеры: 'США', 'Германия', 'Japan', 'UK', или отправьте флаг страны 🇷🇺"
         )
         return WAITING_COUNTRY
     
@@ -631,7 +738,7 @@ async def handle_country(update: Update, context: CallbackContext):
         
         await update.message.reply_text(
             "❌ Страна не распознана. Пожалуйста, уточните название.\n"
-            "Примеры: 'США', 'Германия', 'Japan', 'UK'"
+            "Примеры: 'США', 'Германия', 'Japan', 'UK', или отправьте флаг страны 🇷🇺"
         )
         return WAITING_COUNTRY
 
