@@ -1200,9 +1200,12 @@ async def cancel(update: Update, context: CallbackContext):
 def main() -> None:
     """Основная функция запуска бота"""
     # Инициализация базы геолокации
-    loop = asyncio.get_event_loop()
-    if not loop.run_until_complete(initialize_geoip_database()):
-        logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
+    try:
+        # Используем asyncio.run для запуска асинхронной функции из синхронного контекста
+        if not asyncio.run(initialize_geoip_database()):
+            logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации базы геолокации: {e}")
     
     application = Application.builder().token(TOKEN).build()
 
