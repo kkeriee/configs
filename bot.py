@@ -44,7 +44,7 @@ SUPPORTED_PROTOCOLS = {
 }
 
 # URL для скачивания базы геолокации
-DB_IP_URL = "https://download.db-ip.com/free/dbip-country-lite-2024-06.mmdb.gz"
+DB_IP_URL = "https://download.db-ip.com/free/dbip-country-lite-2025-07.mmdb.gz"
 DB_IP_FILENAME = "dbip-country-lite.mmdb"
 
 # Состояния диалога
