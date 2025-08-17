@@ -8,11 +8,8 @@ import pycountry
 import requests
 import time
 import socket
-import concurrent.futures
 import asyncio
 import random
-import gzip
-import io
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -32,11 +29,6 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 NEURAL_API_KEY = os.getenv("NEURAL_API_KEY")
 MAX_FILE_SIZE = 15 * 1024 * 1024
 MAX_MSG_LENGTH = 4000
-MAX_WORKERS = 15
-MAX_GEO_WORKERS = 5
-CHUNK_SIZE = 100
-NEURAL_MODEL = "deepseek/deepseek-r1-0528"
-NEURAL_TIMEOUT = 15
 MAX_RETRIES = 8
 SUPPORTED_PROTOCOLS = {
     'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 
@@ -63,7 +55,7 @@ if NEURAL_API_KEY:
     neural_client = OpenAI(
         base_url="https://api.novita.ai/v3/openai",
         api_key=NEURAL_API_KEY,
-        timeout=NEURAL_TIMEOUT
+        timeout=15
     )
     logger.info("Нейросеть DeepSeek-R1 инициализирована")
 else:
@@ -77,39 +69,47 @@ config_cache = {}
 instruction_cache = {}
 country_normalization_cache = {}
 neural_improvement_cache = {}
-protocol_cache = {}
 
 # Инициализация базы геолокации
 geoip_reader = None
+geoip_file_path = None
 
 def initialize_geoip_database_sync():
-    """Синхронная инициализация базы геолокации напрямую в память"""
-    global geoip_reader
+    """Синхронная инициализация базы геолокации с использованием временного файла"""
+    global geoip_reader, geoip_file_path
+    
+    # Удаляем предыдущий временный файл если существует
+    if geoip_file_path and os.path.exists(geoip_file_path):
+        try:
+            os.unlink(geoip_file_path)
+            logger.info(f"Удален старый временный файл: {geoip_file_path}")
+        except Exception as e:
+            logger.error(f"Ошибка удаления временного файла: {e}")
     
     try:
         logger.info(f"Скачивание базы геолокации: {DB_IP_URL}")
-        # Повторные попытки скачивания
         for attempt in range(3):
             try:
                 response = requests.get(DB_IP_URL, timeout=60)
                 response.raise_for_status()
-                logger.info(f"База успешно скачана ({len(response.content)} байт)")
                 
-                # ЗАГРУЗКА БАЗЫ НЕПОСРЕДСТВЕННО ИЗ БАЙТОВ (ИСПРАВЛЕНИЕ)
-                geoip_reader = maxminddb.open_database(
-                    database=response.content, 
-                    mode=maxminddb.MODE_MEMORY
-                )
+                # Создаем временный файл
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mmdb') as tmp_file:
+                    tmp_file.write(response.content)
+                    geoip_file_path = tmp_file.name
+                    logger.info(f"Создан временный файл: {geoip_file_path} ({len(response.content)} байт)")
                 
-                logger.info("База геолокации успешно загружена в память")
+                # Загружаем базу из файла
+                geoip_reader = maxminddb.open_database(geoip_file_path)
+                logger.info("База геолокации успешно загружена")
                 return True
             except Exception as e:
-                logger.warning(f"Ошибка скачивания (попытка {attempt+1}/3): {e}")
+                logger.error(f"Ошибка инициализации (попытка {attempt+1}/3): {e}")
                 if attempt < 2:
-                    time.sleep(5)
+                    time.sleep(2)
         return False
     except Exception as e:
-        logger.error(f"Критическая ошибка инициализации базы: {e}")
+        logger.critical(f"Критическая ошибка инициализации базы: {e}")
         return False
 
 async def initialize_geoip_database():
@@ -245,7 +245,7 @@ async def neural_normalize_country(text: str) -> str:
     )
     try:
         response = neural_client.chat.completions.create(
-            model=NEURAL_MODEL,
+            model="deepseek/deepseek-r1-0528",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -282,7 +282,7 @@ async def neural_detect_country(config: str) -> str:
     )
     try:
         response = neural_client.chat.completions.create(
-            model=NEURAL_MODEL,
+            model="deepseek/deepseek-r1-0528",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": config}
@@ -304,7 +304,7 @@ async def neural_detect_country(config: str) -> str:
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны с помощью нейросети"""
     if not neural_client:
-        return "Инструкции недоступны ( нейросеть отключена)"
+        return "Инструкции недоступны (нейросеть отключена)"
     
     if country in instruction_cache:
         return instruction_cache[country]
@@ -316,7 +316,7 @@ async def generate_country_instructions(country: str) -> str:
     )
     try:
         response = neural_client.chat.completions.create(
-            model=NEURAL_MODEL,
+            model="deepseek/deepseek-r1-0528",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Сгенерируй инструкцию для {country}"}
@@ -348,7 +348,7 @@ async def neural_improve_search(country: str) -> dict:
     )
     try:
         response = neural_client.chat.completions.create(
-            model=NEURAL_MODEL,
+            model="deepseek/deepseek-r1-0528",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": country}
@@ -659,9 +659,12 @@ async def strict_search(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
         return ConversationHandler.END
     
+    # Попытка переинициализации базы при необходимости
     if not geoip_reader:
-        await context.bot.send_message(chat_id=user_id, text="❌ База геолокации не загружена. Строгий поиск недоступен.")
-        return ConversationHandler.END
+        logger.warning("База геолокации не загружена, пытаемся инициализировать...")
+        if not initialize_geoip_database_sync():
+            await context.bot.send_message(chat_id=user_id, text="❌ База геолокации недоступна. Строгий поиск невозможен.")
+            return ConversationHandler.END
     
     start_time = time.time()
     prelim_configs = []
@@ -951,6 +954,7 @@ def resolve_dns(host: str) -> str:
 def geolocate_ip(ip: str) -> str:
     """Геолокация IP с использованием локальной базы данных"""
     if not geoip_reader:
+        logger.error("Попытка геолокации без инициализированной базы")
         return None
     
     if ip in geo_cache:
@@ -1189,6 +1193,18 @@ def extract_domain(config: str) -> str:
 
 async def cancel(update: Update, context: CallbackContext):
     """Отмена операции и очистка"""
+    global geoip_file_path
+    
+    # Удаление временного файла базы геолокации
+    if geoip_file_path and os.path.exists(geoip_file_path):
+        try:
+            os.unlink(geoip_file_path)
+            logger.info(f"Временный файл базы удален: {geoip_file_path}")
+            geoip_file_path = None
+        except Exception as e:
+            logger.error(f"Ошибка удаления временного файла: {e}")
+    
+    # Очистка пользовательских данных
     if 'file_path' in context.user_data:
         file_path = context.user_data['file_path']
         if os.path.exists(file_path):
@@ -1206,20 +1222,14 @@ async def cancel(update: Update, context: CallbackContext):
 
 async def post_init(application: Application):
     """Инициализация после запуска приложения"""
-    # Создаем новый цикл событий для инициализации базы геолокации
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
         if not await initialize_geoip_database():
             logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы геолокации: {e}")
-    finally:
-        loop.close()
 
 def main() -> None:
     """Основная функция запуска бота"""
-    # Создаем приложение с обработчиком post_init
     application = Application.builder().token(TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
