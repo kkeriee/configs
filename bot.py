@@ -430,8 +430,7 @@ async def handle_country(update: Update, context: CallbackContext):
     normalized_text = normalize_text(country_request)
     if not normalized_text:
         await update.message.reply_text(
-            "❌ Некорректный запрос. Пожалуйста, отправьте флаг страны.
-"
+            "❌ Некорректный запрос. Пожалуйста, отправьте флаг страны.\n"
             "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
         )
         return WAITING_COUNTRY
@@ -443,8 +442,7 @@ async def handle_country(update: Update, context: CallbackContext):
         logger.info(f"Pycountry определил страну: {country.name}")
     except LookupError:
         await update.message.reply_text(
-            "❌ Страна не распознана. Пожалуйста, отправьте флаг страны.
-"
+            "❌ Страна не распознана. Пожалуйста, отправьте флаг страны.\n"
             "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
         )
         return WAITING_COUNTRY
@@ -469,10 +467,8 @@ async def handle_country(update: Update, context: CallbackContext):
         instruction_cache[country.name.lower()] = instructions
     
     await update.message.reply_text(
-        f"🌍 Вы выбрали страну: {country.name}
-"
-        f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция загружается...')}
-"
+        f"🌍 Вы выбрали страну: {country.name}\n"
+        f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция загружается...')}\n"
         "Выберите режим поиска:",
         reply_markup=reply_markup
     )
@@ -512,8 +508,8 @@ async def fast_search(update: Update, context: CallbackContext):
                 await context.bot.edit_message_text(
                     chat_id=user_id,
                     message_id=progress_msg.message_id,
-                    text=f"🔎 Быстрый поиск: {progress_bar} {progress:.1f}%
-Обработано: {processed}/{total_configs}"
+                    text=f"🔎 Быстрый поиск: {progress_bar} {progress:.1f}%\n"
+                         f"Обработано: {processed}/{total_configs}"
                 )
                 context.user_data['progress_last_update'] = time.time()
                 # Проверка необходимости остановки
@@ -653,8 +649,8 @@ async def strict_search(update: Update, context: CallbackContext):
                 await context.bot.edit_message_text(
                     chat_id=user_id,
                     message_id=progress_msg.message_id,
-                    text=f"🔎 Этап 1: {progress_bar} {progress:.1f}%
-Обработано: {processed}/{total_configs}"
+                    text=f"🔎 Этап 1: {progress_bar} {progress:.1f}%\n"
+                         f"Обработано: {processed}/{total_configs}"
                 )
                 context.user_data['progress_last_update'] = time.time()
                 # Проверка необходимости остановки
@@ -744,8 +740,8 @@ async def strict_search(update: Update, context: CallbackContext):
                             await context.bot.edit_message_text(
                                 chat_id=user_id,
                                 message_id=progress_msg.message_id,
-                                text=f"🌐 Этап 2: {progress_bar} {progress:.1f}%
-Обработано хостов: {total_processed}/{total_hosts}",
+                                text=f"🌐 Этап 2: {progress_bar} {progress:.1f}%\n"
+                                     f"Обработано хостов: {total_processed}/{total_hosts}",
                                 reply_markup=stop_reply_markup
                             )
                             context.user_data['progress_last_update'] = time.time()
@@ -846,13 +842,11 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     # Подготавливаем сообщения
-    header = f"Конфиги для {country_name}:
-"
+    header = f"Конфиги для {country_name}:\n"
     messages = []
     current_message = header
     for config in matched_configs:
-        config_line = f"{config}
-"
+        config_line = f"{config}\n"
         if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
             messages.append(current_message)
             current_message = config_line
@@ -869,8 +863,7 @@ async def send_configs(update: Update, context: CallbackContext):
         try:
             # Добавляем прогресс в последнее сообщение
             if i == total_messages - 1:
-                progress = f"
-⌛ Отправлено {i+1}/{total_messages} сообщений"
+                progress = f"\n⌛ Отправлено {i+1}/{total_messages} сообщений"
                 if len(message) + len(progress) <= MAX_MSG_LENGTH:
                     message += progress
             # Отправляем сообщение
@@ -986,7 +979,7 @@ def detect_by_keywords(config: str, target_country: str) -> bool:
         "morocco": [r'morocco', r'rabat', r'\.ma\b', r'摩洛哥'],
         "nepal": [r'nepal', r'kathmandu', r'\.np\b', r'尼泊尔'],
         "oman": [r'oman', r'muscat', r'\.om\b', r'阿曼'],
-        "pakistan": [r'pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
+        "pakistan": [r' pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
         "qatar": [r'qatar', r'doha', r'\.qa\b', r'卡塔尔'],
         "serbia": [r'serbia', r'belgrade', r'\.rs\b', r'塞尔维я'],
         "slovakia": [r'slovakia', r'bratislava', r'\.sk\b', r'斯洛伐克'],
