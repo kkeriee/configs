@@ -82,6 +82,21 @@ geoip_db_lock = asyncio.Lock()
 app = None
 loop = None
 
+# Предварительно скомпилированные регулярные выражения
+DOMAIN_PATTERN = re.compile(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}', re.IGNORECASE)
+IPV4_PATTERN = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+HOST_PATTERNS = [
+    re.compile(r'@([\w\.-]+):?', re.IGNORECASE),
+    re.compile(r'host\s*[:=]\s*"([^"]+)"', re.IGNORECASE),
+    re.compile(r'address\s*=\s*([\w\.-]+)', re.IGNORECASE),
+    re.compile(r'server\s*=\s*([\w\.-]+)', re.IGNORECASE),
+    re.compile(r'hostname\s*=\s*([\w\.-]+)', re.IGNORECASE)
+]
+
+# Кэши для DNS и геолокации
+dns_cache = OrderedDict()
+geo_cache = OrderedDict()
+
 # Класс для обработки HTTP запросов (вебхуки + health check)
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -147,19 +162,22 @@ def is_config_relevant(config: str, target_country: str, country_codes: list) ->
     if not isinstance(country_codes, list):
         country_codes = []
     
-    # Проверяем по домену
+    # Проверяем по домену и TLD
     domain = extract_domain(config)
     if domain:
+        # Проверка TLD
         tld = domain.split('.')[-1].lower()
         if tld in country_codes:
             logger.debug(f"Конфиг релевантен по TLD: {tld}")
             return True
-        # Дополнительная проверка: содержит ли домен название страны
-        country_keywords = COUNTRY_PATTERNS.get(target_country, [])
-        for keyword in country_keywords:
-            if keyword.strip('^$*+?.|\\') in domain:
-                logger.debug(f"Конфиг релевантен по ключевому слову в домене: {keyword}")
-                return True
+        
+        # Проверка ключевых слов в домене
+        normalized_target = normalize_country_name(target_country)
+        if normalized_target in COUNTRY_PATTERNS:
+            for pattern in COUNTRY_PATTERNS[normalized_target]:
+                if re.search(pattern, domain):
+                    logger.debug(f"Конфиг релевантен по ключевому слову в домене: {pattern}")
+                    return True
     
     # Проверяем по ключевым словам с нормализацией целевой страны
     return detect_by_keywords(config_lower, target_country)
@@ -265,22 +283,19 @@ def extract_host(config: str) -> str:
                 logger.debug(f"Ошибка обработки Wireguard: {e}")
                 return None
         
-        # Общий случай
-        patterns = [
-            r'\b(?:\d{1,3}\.){3}\d{1,3}\b',  # IPv4
-            r'([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}',  # Домен
-            r'@([\w\.-]+):?',  # Формат user@host:port
-            r'host\s*[:=]\s*"([^"]+)"',  # JSON-формат
-            r'address\s*=\s*([\w\.-]+)',  # Конфигурационные файлы
-            r'server\s*=\s*([\w\.-]+)',  # Серверные настройки
-            r'hostname\s*=\s*([\w\.-]+)'  # Имя хоста
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, config, re.IGNORECASE)
-            if match:
-                if match.lastindex:
-                    return match.group(1)
-                return match.group(0)
+        # Общий случай - используем предварительно скомпилированные паттерны
+        for pattern in HOST_PATTERNS:
+            match = pattern.search(config)
+            if match and match.lastindex:
+                host = match.group(1)
+                # Проверка, что извлечено что-то осмысленное
+                if len(host) > 3 and '.' in host:
+                    return host
+                
+        # Проверка IPv4
+        ipv4_match = IPV4_PATTERN.search(config)
+        if ipv4_match:
+            return ipv4_match.group(0)
                 
     except Exception as e:
         logger.debug(f"Ошибка извлечения хоста: {e}")
@@ -289,11 +304,9 @@ def extract_host(config: str) -> str:
 def extract_domain(config: str) -> str:
     """Извлечение домена из конфига с безопасной обработкой"""
     try:
-        # Улучшенное регулярное выражение для поиска доменов
-        domain_pattern = r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}'
-        match = re.search(domain_pattern, config, re.IGNORECASE)
+        match = DOMAIN_PATTERN.search(config)
         if match:
-            return match.group(0)
+            return match.group(0).lower()
     except Exception as e:
         logger.debug(f"Ошибка извлечения домена: {e}")
     return None
@@ -380,33 +393,14 @@ async def handle_file(update: Update, context: CallbackContext):
             content = f.read()
         
         # Извлечение конфигураций
-        configs = []
-        current_config = []
-        max_lines = 10000  # Максимальное количество строк на конфиг
-        line_count = 0
-        
-        for line in content.splitlines():
-            line_count += 1
-            if line_count > max_lines:
-                break
-            stripped = line.strip()
-            if stripped:
-                # Проверка на начало нового конфига
-                if any(stripped.startswith(proto) for proto in SUPPORTED_PROTOCOLS):
-                    if current_config:
-                        configs.append("\n".join(current_config))
-                        current_config = []
-                    # Проверка лимита
-                    if len(configs) >= MAX_CONFIGS:
-                        break
-                current_config.append(stripped)
-        
-        # Добавляем последний конфиг
-        if current_config and len(configs) < MAX_CONFIGS:
-            configs.append("\n".join(current_config))
+        configs = extract_configs(content)
         
         # Удаляем временный файл
         os.unlink(file_path)
+        
+        if len(configs) > MAX_CONFIGS:
+            configs = configs[:MAX_CONFIGS]
+            logger.warning(f"Файл содержит слишком много конфигов. Ограничено до {MAX_CONFIGS}")
         
         context.user_data['configs'] = configs
         context.user_data['file_name'] = document.file_name
@@ -437,6 +431,53 @@ async def handle_file(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Ошибка при обработке файла. Убедитесь, что это текстовый файл.")
         return WAITING_FILE
 
+def extract_configs(content: str) -> list:
+    """Извлечение конфигов из файла с улучшенной логикой"""
+    configs = []
+    
+    # Попробуем обработать как JSON
+    try:
+        data = json.loads(content)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, str):
+                    configs.append(item)
+                else:
+                    configs.append(json.dumps(item))
+            return configs
+        elif isinstance(data, dict) and 'configs' in data:
+            for item in data['configs']:
+                if isinstance(item, str):
+                    configs.append(item)
+                else:
+                    configs.append(json.dumps(item))
+            return configs
+    except json.JSONDecodeError:
+        pass  # Не JSON, продолжаем стандартную обработку
+    
+    # Стандартная обработка по строкам
+    current_config = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # Обнаружение начала нового конфига
+        if any(stripped.startswith(proto) for proto in SUPPORTED_PROTOCOLS):
+            if current_config:
+                configs.append("\n".join(current_config))
+                current_config = []
+            # Проверка лимита
+            if len(configs) >= MAX_CONFIGS:
+                break
+        current_config.append(stripped)
+    
+    # Добавляем последний конфиг
+    if current_config and len(configs) < MAX_CONFIGS:
+        configs.append("\n".join(current_config))
+    
+    return configs
+
 async def handle_country(update: Update, context: CallbackContext):
     """Обработка выбора страны"""
     text = update.message.text.strip()
@@ -448,10 +489,13 @@ async def handle_country(update: Update, context: CallbackContext):
         # Нормализуем название страны
         normalized_country = normalize_country_name(country_name)
         
+        # Получаем коды страны
+        country_codes = get_country_code(normalized_country)
+        
         # Сохраняем данные о стране
         context.user_data['country'] = country_name
         context.user_data['target_country'] = normalized_country
-        context.user_data['country_codes'] = get_country_code(normalized_country)
+        context.user_data['country_codes'] = country_codes
         
         logger.info(f"Пользователь {user_id} выбрал страну: {country_name} ({normalized_country})")
         
@@ -619,8 +663,12 @@ async def strict_search(update: Update, context: CallbackContext):
         # Создаем семафор для ограничения количества параллельных запросов
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_DNS)
         
-        # Функция для разрешения хоста
+        # Функция для разрешения хоста с кэшированием
         async def resolve_host(host):
+            # Проверка кэша
+            if host in dns_cache and (time.time() - dns_cache[host]['timestamp']) < CACHE_TTL:
+                return host, dns_cache[host]['ip']
+            
             async with semaphore:
                 try:
                     resolver = dns.asyncresolver.Resolver()
@@ -628,13 +676,23 @@ async def strict_search(update: Update, context: CallbackContext):
                     resolver.lifetime = DNS_TIMEOUT
                     answer = await resolver.resolve(host, 'A')
                     if answer:
-                        return host, answer[0].address
+                        ip = answer[0].address
+                        # Обновляем кэш
+                        dns_cache[host] = {'ip': ip, 'timestamp': time.time()}
+                        # Удаляем старые записи, если кэш переполнен
+                        if len(dns_cache) > CACHE_MAX_SIZE:
+                            oldest = next(iter(dns_cache))
+                            del dns_cache[oldest]
+                        return host, ip
                 except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, 
                         dns.resolver.Timeout, dns.exception.DNSException) as e:
                     logger.debug(f"Не удалось разрешить {host}: {e}")
                 except Exception as e:
                     logger.debug(f"Неизвестная ошибка при разрешении {host}: {e}")
-                return host, None
+            
+            # Если не удалось разрешить, сохраняем в кэш как неудачу
+            dns_cache[host] = {'ip': None, 'timestamp': time.time()}
+            return host, None
         
         # Разрешаем все хосты параллельно
         tasks = [resolve_host(host) for host in unique_hosts]
@@ -652,6 +710,12 @@ async def strict_search(update: Update, context: CallbackContext):
             if context.user_data.get('stop_strict_search'):
                 break
                 
+            # Проверка кэша геолокации
+            if ip in geo_cache and (time.time() - geo_cache[ip]['timestamp']) < CACHE_TTL:
+                host_country_map[host] = geo_cache[ip]['country']
+                total_processed += 1
+                continue
+                
             try:
                 async with geoip_db_lock:
                     if geoip_db:
@@ -660,6 +724,13 @@ async def strict_search(update: Update, context: CallbackContext):
                             if match and 'country' in match:
                                 country_iso = match['country']['iso_code'].lower()
                                 host_country_map[host] = country_iso
+                                
+                                # Обновляем кэш
+                                geo_cache[ip] = {'country': country_iso, 'timestamp': time.time()}
+                                # Удаляем старые записи, если кэш переполнен
+                                if len(geo_cache) > CACHE_MAX_SIZE:
+                                    oldest = next(iter(geo_cache))
+                                    del geo_cache[oldest]
                         except Exception as e:
                             logger.debug(f"Ошибка геолокации для {host}: {e}")
             except Exception as e:
@@ -863,7 +934,7 @@ async def send_configs(update: Update, context: CallbackContext):
     current_message = header
     
     for config in matched_configs:
-        config_line = f"{config}\n"
+        config_line = f"{config}\n\n"
         
         # Проверяем, не превысит ли добавление этой строки лимит
         if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
