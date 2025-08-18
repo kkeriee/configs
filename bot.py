@@ -24,6 +24,9 @@ from telegram.ext import (
 )
 import maxminddb
 import dns.asyncresolver
+# Импортируем данные о странах из отдельного файла
+from country_data import FLAG_COUNTRY_MAP, COUNTRY_PATTERNS, COUNTRY_INSTRUCTIONS
+
 # Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15MB
@@ -45,7 +48,7 @@ DB_IP_URL = "https://github.com/Loyalsoldier/geoip/releases/latest/download/Coun
 DB_SHA256_URL = "https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb.sha256"
 # Состояния диалога
 (START, WAITING_FILE, WAITING_COUNTRY, WAITING_MODE, 
- WAITING_NUMBER, SENDING_CONFIGS, PROCESSING_STRICT) = range(7)
+ WAITING_NUMBER, SENDING_CONFIGS, PROCESSING_STRICT, PROCESSING_SIMPLE) = range(8)
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -92,13 +95,16 @@ geo_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 dns_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 config_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 instruction_cache = LimitedCache(max_size=100, ttl=CACHE_TTL * 2)  # Инструкции живут дольше
-
 # Инициализация базы геолокации
 geoip_reader = None
 geoip_file_path = None
 
 def check_rate_limit(user_id: int) -> bool:
     """Проверка ограничения запросов"""
+    # Исключение для конкретного пользователя без ограничений
+    if user_id == 1040929628:
+        return True
+    
     now = time.time()
     if user_id in user_request_times:
         # Удаляем старые записи
@@ -174,7 +180,8 @@ def clear_temporary_data(context: CallbackContext):
         'matched_configs', 'current_index', 'stop_sending', 
         'strict_in_progress', 'country_request', 'country', 
         'target_country', 'country_codes', 'search_mode',
-        'file_path', 'file_paths', 'progress_last_update', 'progress_message_id'
+        'file_path', 'file_paths', 'progress_last_update', 'progress_message_id',
+        'simple_in_progress', 'stop_simple_search'
     ]
     for key in keys_to_clear:
         if key in context.user_data:
@@ -183,104 +190,28 @@ def clear_temporary_data(context: CallbackContext):
 def normalize_text(text: str) -> str:
     """Нормализация текста только по флагам стран"""
     text = text.strip()
-    
-    # Словарь соответствия флагов странам
-    flag_country_map = {
-        "🇷🇺": "russia",
-        "🇺🇸": "united states",
-        "🇩🇪": "germany",
-        "🇯🇵": "japan",
-        "🇫🇷": "france",
-        "🇬🇧": "united kingdom",
-        "🇸🇬": "singapore",
-        "🇳🇱": "netherlands",
-        "🇨🇦": "canada",
-        "🇨🇭": "switzerland",
-        "🇸🇪": "sweden",
-        "🇦🇺": "australia",
-        "🇧🇷": "brazil",
-        "🇮🇳": "india",
-        "🇰🇷": "south korea",
-        "🇹🇷": "turkey",
-        "🇹🇼": "taiwan",
-        "🇿🇦": "south africa",
-        "🇦🇪": "united arab emirates",
-        "🇸🇦": "saudi arabia",
-        "🇮🇱": "israel",
-        "🇲🇽": "mexico",
-        "🇦🇷": "argentina",
-        "🇮🇹": "italy",
-        "🇪🇸": "spain",
-        "🇵🇹": "portugal",
-        "🇳🇴": "norway",
-        "🇫🇮": "finland",
-        "🇩🇰": "denmark",
-        "🇵🇱": "poland",
-        "🇺🇦": "ukraine",
-        "🇧🇾": "belarus",
-        "🇨🇳": "china",
-        "🇮🇩": "indonesia",
-        "🇲🇾": "malaysia",
-        "🇵🇭": "philippines",
-        "🇻🇳": "vietnam",
-        "🇹🇭": "thailand",
-        "🇨🇿": "czech republic",
-        "🇷🇴": "romania",
-        "🇭🇺": "hungary",
-        "🇬🇷": "greece",
-        "🇧🇬": "bulgaria",
-        "🇪🇬": "egypt",
-        "🇳🇬": "nigeria",
-        "🇰🇪": "kenya",
-        "🇨🇴": "colombia",
-        "🇵🇪": "peru",
-        "🇨🇱": "chile",
-        "🇻🇪": "venezuela",
-        "🇦🇹": "austria",
-        "🇧🇪": "belgium",
-        "🇮🇪": "ireland",
-        "🇩🇿": "algeria",
-        "🇦🇴": "angola",
-        "🇧🇩": "bangladesh",
-        "🇰🇭": "cambodia",
-        "🇨🇷": "costa rica",
-        "🇭🇷": "croatia",
-        "🇨🇺": "cuba",
-        "🇪🇪": "estonia",
-        "🇬🇪": "georgia",
-        "🇬🇭": "ghana",
-        "🇮🇷": "iran",
-        "🇯🇴": "jordan",
-        "🇰🇿": "kazakhstan",
-        "🇰🇼": "kuwait",
-        "🇱🇧": "lebanon",
-        "🇱🇾": "libya",
-        "🇲🇦": "morocco",
-        "🇳🇵": "nepal",
-        "🇴🇲": "oman",
-        "🇵🇰": "pakistan",
-        "🇶🇦": "qatar",
-        "🇷🇸": "serbia",
-        "🇸🇰": "slovakia",
-        "🇸🇮": "slovenia",
-        "🇸🇩": "sudan",
-        "🇸🇾": "syria",
-        "🇹🇳": "tunisia",
-        "🇺🇾": "uruguay",
-        "🇺🇿": "uzbekistan",
-        "🇾🇪": "yemen"
-    }
-    
     # Проверка, что текст является флагом
-    if text in flag_country_map:
-        return flag_country_map[text]
-    
+    if text in FLAG_COUNTRY_MAP:
+        return FLAG_COUNTRY_MAP[text]
     # Если текст не является флагом, возвращаем None
     return None
 
 async def generate_country_instructions(country: str) -> str:
-    """Генерация инструкций для страны (оставлена для совместимости)"""
-    return f"Инструкция для {country}"
+    """Генерация инструкций для страны"""
+    # Проверяем наличие инструкции в кэше
+    if country.lower() in instruction_cache:
+        return instruction_cache[country.lower()]
+    
+    # Проверяем наличие в словаре инструкций
+    if country.lower() in COUNTRY_INSTRUCTIONS:
+        instruction = COUNTRY_INSTRUCTIONS[country.lower()]
+    else:
+        # Генерируем инструкцию по умолчанию
+        instruction = f"Инструкция по настройке для {country}"
+    
+    # Сохраняем в кэш
+    instruction_cache[country.lower()] = instruction
+    return instruction
 
 async def start_check(update: Update, context: CallbackContext):
     """Начало проверки конфигов с выбором действия"""
@@ -288,10 +219,12 @@ async def start_check(update: Update, context: CallbackContext):
     if not check_rate_limit(update.message.from_user.id):
         await update.message.reply_text("❌ Слишком много запросов. Пожалуйста, подождите минуту.")
         return ConversationHandler.END
+    
     clear_temporary_data(context)
     user_id = update.message.from_user.id
+    
     # Проверяем наличие предыдущих данных
-    if 'configs' in context.user_data and context.user_data['configs'] and 'last_country' in context.user_data:
+    if 'configs' in context.user_data and context.user_data['configs']:
         keyboard = [
             [InlineKeyboardButton("🌍 Использовать текущий файл", callback_data='use_current_file')],
             [InlineKeyboardButton("📤 Загрузить новый файл", callback_data='new_file')],
@@ -299,7 +232,8 @@ async def start_check(update: Update, context: CallbackContext):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "У вас уже есть загруженный файл конфигов. Хотите использовать его или загрузить новый?",
+            f"У вас уже есть загруженный файл конфигов: {context.user_data.get('file_name', 'Файл')}. "
+            "Хотите использовать его или загрузить новый?",
             reply_markup=reply_markup
         )
         return START
@@ -383,6 +317,7 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
     if not check_rate_limit(query.from_user.id):
         await query.edit_message_text("❌ Слишком много запросов. Пожалуйста, подождите минуту.")
         return ConversationHandler.END
+    
     if query.data == 'add_file':
         await query.edit_message_text("📎 Пожалуйста, загрузите дополнительный файл с конфигурациями.")
         return WAITING_FILE
@@ -405,6 +340,11 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
         await query.edit_message_text("🔍 Запускаю строгий поиск...")
         await strict_search(update, context)
         return WAITING_NUMBER
+    elif query.data == 'simple_mode':
+        context.user_data['search_mode'] = 'simple'
+        await query.edit_message_text("🔎 Запускаю простой поиск...")
+        await simple_search(update, context)
+        return WAITING_NUMBER
     elif query.data == 'stop_sending':
         context.user_data['stop_sending'] = True
         await query.edit_message_text("⏹ Отправка конфигов остановлена.")
@@ -412,6 +352,10 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
     elif query.data == 'stop_strict_search':
         context.user_data['stop_strict_search'] = True
         await query.edit_message_text("⏹ Строгий поиск остановлен.")
+        return ConversationHandler.END
+    elif query.data == 'stop_simple_search':
+        context.user_data['stop_simple_search'] = True
+        await query.edit_message_text("⏹ Простой поиск остановлен.")
         return ConversationHandler.END
     elif query.data == 'cancel':
         await cancel(update, context)
@@ -425,16 +369,14 @@ async def handle_country(update: Update, context: CallbackContext):
     """Обработка ввода флага страны"""
     country_request = update.message.text
     context.user_data['country_request'] = country_request
-    
     # Проверка, что введенный текст является флагом
     normalized_text = normalize_text(country_request)
     if not normalized_text:
         await update.message.reply_text(
             "❌ Некорректный запрос. Пожалуйста, отправьте флаг страны.\n"
-            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
+            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪, 🇱🇻, 🇱🇹"
         )
         return WAITING_COUNTRY
-    
     # Поиск страны через pycountry
     try:
         countries = pycountry.countries.search_fuzzy(normalized_text)
@@ -443,29 +385,28 @@ async def handle_country(update: Update, context: CallbackContext):
     except LookupError:
         await update.message.reply_text(
             "❌ Страна не распознана. Пожалуйста, отправьте флаг страны.\n"
-            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
+            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪, 🇱🇻, 🇱🇹"
         )
         return WAITING_COUNTRY
-    
     # Сохраняем данные о стране
     context.user_data['country'] = country.name
     context.user_data['target_country'] = country.name.lower()
     context.user_data['country_codes'] = [c.alpha_2.lower() for c in countries] + [country.alpha_2.lower()]
-    
     # Клавиатура выбора режима
     keyboard = [
         [
             InlineKeyboardButton("⚡ Быстрый поиск", callback_data='fast_mode'),
             InlineKeyboardButton("🔍 Строгий поиск", callback_data='strict_mode')
+        ],
+        [
+            InlineKeyboardButton("🔎 Простой поиск", callback_data='simple_mode')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     # Генерация инструкций
     if country.name.lower() not in instruction_cache:
         instructions = await generate_country_instructions(country.name)
         instruction_cache[country.name.lower()] = instructions
-    
     await update.message.reply_text(
         f"🌍 Вы выбрали страну: {country.name}\n"
         f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция загружается...')}\n"
@@ -537,6 +478,77 @@ async def fast_search(update: Update, context: CallbackContext):
         return WAITING_NUMBER
     except Exception as e:
         logger.error(f"Ошибка быстрого поиска: {e}")
+        await context.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=progress_msg.message_id,
+            text="❌ Произошла ошибка при поиске конфигураций."
+        )
+        return ConversationHandler.END
+
+async def simple_search(update: Update, context: CallbackContext):
+    """Простой поиск конфигов только по ключевым словам и доменам"""
+    user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
+    configs = context.user_data.get('configs', [])
+    target_country = context.user_data.get('target_country', '')
+    if not configs or not target_country:
+        await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
+        return ConversationHandler.END
+    
+    start_time = time.time()
+    matched_configs = []
+    progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Начинаю простой поиск...")
+    total_configs = len(configs)
+    processed = 0
+    
+    try:
+        for i, config in enumerate(configs):
+            if context.user_data.get('stop_simple_search'):
+                break
+            try:
+                if is_config_relevant(config, target_country, context.user_data['country_codes']):
+                    matched_configs.append(config)
+            except Exception as e:
+                logger.error(f"Ошибка проверки конфига #{i}: {e}")
+            processed += 1
+            
+            # Регулярное обновление прогресса
+            if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL or i == total_configs - 1:
+                progress = min(processed / total_configs * 100, 100)
+                progress_bar = create_progress_bar(progress)
+                await context.bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=progress_msg.message_id,
+                    text=f"🔎 Простой поиск: {progress_bar} {progress:.1f}%\n"
+                         f"Обработано: {processed}/{total_configs}"
+                )
+                context.user_data['progress_last_update'] = time.time()
+                # Проверка необходимости остановки
+                if context.user_data.get('stop_simple_search'):
+                    break
+        
+        logger.info(f"Найдено {len(matched_configs)} конфигов для {context.user_data['country']}, обработка заняла {time.time()-start_time:.2f} сек")
+        if not matched_configs:
+            await context.bot.edit_message_text(
+                chat_id=user_id,
+                message_id=progress_msg.message_id,
+                text=f"❌ Конфигурации для {context.user_data['country']} не найдены."
+            )
+            return ConversationHandler.END
+        
+        context.user_data['matched_configs'] = matched_configs
+        # Обновляем сообщение с результатом
+        await context.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=progress_msg.message_id,
+            text=f"✅ Найдено {len(matched_configs)} конфигов для {context.user_data['country']}!"
+        )
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"🌍 Для страны {context.user_data['country']} найдено {len(matched_configs)} конфигов. Сколько конфигов прислать? (введите число от 1 до {len(matched_configs)})"
+        )
+        return WAITING_NUMBER
+    except Exception as e:
+        logger.error(f"Ошибка простого поиска: {e}")
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
@@ -841,7 +853,7 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     # Подготавливаем сообщения
-    header = f"Конфиги для {country_name}:\n\n"
+    header = f"Конфиги для {country_name}:\n"
     messages = []
     current_message = header
     for config in matched_configs:
@@ -870,7 +882,7 @@ async def send_configs(update: Update, context: CallbackContext):
         try:
             # Добавляем прогресс в последнее сообщение
             if i == total_messages - 1:
-                progress = f"\n\n⌛ Отправлено {i+1}/{total_messages} сообщений"
+                progress = f"\n⌛ Отправлено {i+1}/{total_messages} сообщений"
                 if len(message) + len(progress) <= MAX_MSG_LENGTH:
                     message += progress
             # Отправляем сообщение
@@ -911,98 +923,17 @@ def is_config_relevant(config: str, target_country: str, country_codes: list) ->
         tld = domain.split('.')[-1].lower()
         if tld in country_codes:
             return True
-    
     # Проверяем по ключевым словам
     if detect_by_keywords(config, target_country):
         return True
-    
     return False
 
 def detect_by_keywords(config: str, target_country: str) -> bool:
     """Обнаружение страны по ключевым словам"""
-    # Стандартные паттерны
-    patterns = {
-        'japan': [r'jp\b', r'japan', r'tokyo', r'\.jp\b', r'日本', r'東京'],
-        'united states': [r'us\b', r'usa\b', r'united states', r'new york', r'\.us\b', r'美国', r'紐 YORK'],
-        'russia': [r'ru\b', r'russia', r'moscow', r'\.ru\b', r'россия', r'俄国', r'москва'],
-        'germany': [r'de\b', r'germany', r'frankfurt', r'\.de\b', r'германия', r'德国', r'フランクフルト'],
-        'united kingdom': [r'uk\b', r'united kingdom', r'london', r'\.uk\b', r'英国', r'倫敦', r'gb'],
-        'france': [r'france', r'paris', r'\.fr\b', r'法国', r'巴黎'],
-        'brazil': [r'brazil', r'sao paulo', r'\.br\b', r'巴西', r'聖保羅'],
-        'singapore': [r'singapore', r'\.sg\b', r'新加坡', r'星加坡'],
-        'south korea': [r'korea', r'seoul', r'\.kr\b', r'韩国', r'首爾', r'korean'],
-        'turkey': [r'turkey', r'istanbul', r'\.tr\b', r'土耳其', r'伊斯坦布爾'],
-        'taiwan': [r'taiwan', r'taipei', r'\.tw\b', r'台湾', r'台北'],
-        'switzerland': [r'switzerland', r'zurich', r'\.ch\b', r'瑞士', r'蘇黎世'],
-        'india': [r'india', r'mumbai', r'\.in\b', r'印度', r'孟買'],
-        'canada': [r'canada', r'toronto', r'\.ca\b', r'加拿大', r'多倫多'],
-        'australia': [r'australia', r'sydney', r'\.au\b', r'澳洲', r'悉尼'],
-        'china': [r'china', r'beijing', r'\.cn\b', r'中国', r'北京'],
-        'italy': [r'italy', r'rome', r'\.it\b', r'意大利', r'羅馬'],
-        'spain': [r'spain', r'madrid', r'\.es\b', r'西班牙', r'马德里'],
-        'portugal': [r'portugal', r'lisbon', r'\.pt\b', r'葡萄牙', r'里斯本'],
-        'norway': [r'norway', r'oslo', r'\.no\b', r'挪威', r'奥斯陆'],
-        'finland': [r'finland', r'helsinki', r'\.fi\b', r'芬兰', r'赫尔辛基'],
-        'denmark': [r'denmark', r'copenhagen', r'\.dk\b', r'丹麦', r'哥本哈根'],
-        'poland': [r'poland', r'warsaw', r'\.pl\b', r'波兰', r'华沙'],
-        'ukraine': [r'ukraine', r'kyiv', r'\.ua\b', r'乌克兰', r'基辅'],
-        'belarus': [r'belarus', r'minsk', r'\.by\b', r'白俄罗斯', r'明斯克'],
-        'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'印度尼西亚', r'雅加达'],
-        'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'马来西亚', r'吉隆坡'],
-        'philippines': [r'philippines', r'manila', r'\.ph\b', r'菲律宾', r'马尼ла'],
-        'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'越南', r'河内'],
-        'thailand': [r'thailand', r'bangkok', r'\.th\b', r'泰国', r'曼谷'],
-        'czech republic': [r'czech', r'prague', r'\.cz\b', r'捷克', r'布拉格'],
-        'romania': [r'romania', r'bucharest', r'\.ro\b', r'罗马尼亚', r'布加勒斯特'],
-        'hungary': [r'hungary', r'budapest', r'\.hu\b', r'匈牙利', r'布达佩с'],
-        'greece': [r'greece', r'athens', r'\.gr\b', r'希腊', r'雅典'],
-        'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'保加利亚', r'索非а'],
-        'egypt': [r'egypt', r'cairo', r'\.eg\b', r'埃及', r'开罗'],
-        'nigeria': [r'nigeria', r'abuja', r'\.ng\b', r'尼日利亚', r'阿布贾'],
-        'kenya': [r'kenya', r'nairobi', r'\.ke\b', r'肯尼亚', r'内罗毕'],
-        'colombia': [r'colombia', r'bogota', r'\.co\b', r'哥伦比亚', r'波哥大'],
-        'peru': [r'peru', r'lima', r'\.pe\b', r'秘鲁', r'利马'],
-        'chile': [r'chile', r'santiago', r'\.cl\b', r'智利', r'圣地亚哥'],
-        'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'委内瑞拉', r'加拉加斯'],
-        "austria": [r'austria', r'vienna', r'\.at\b', r'奥地利', r'维也纳'],
-        "belgium": [r'belgium', r'brussels', r'\.be\b', r'比利时', r'布鲁塞尔'],
-        "ireland": [r'ireland', r'dublin', r'\.ie\b', r'爱尔兰', r'都柏林'],
-        "algeria": [r'algeria', r'algiers', r'\.dz\b', r'الجزائر', r'阿尔及利亚'],
-        "angola": [r'angola', r'luanda', r'\.ao\b', r'安哥拉'],
-        "bangladesh": [r'bangladesh', r'dhaka', r'\.bd\b', r'孟加拉'],
-        "cambodia": [r'cambodia', r'phnom penh', r'\.kh\b', r'柬埔寨'],
-        "costa rica": [r'costa rica', r'san jose', r'\.cr\b', r'哥斯达黎加'],
-        "croatia": [r'croatia', r'zagreb', r'\.hr\b', r'克罗地亚'],
-        "cuba": [r'cuba', r'havana', r'\.cu\b', r'古巴'],
-        "estonia": [r'estonia', r'tallinn', r'\.ee\b', r'爱沙尼亚'],
-        "georgia": [r'georgia', r'tbilisi', r'\.ge\b', r'格鲁吉亚'],
-        "ghana": [r'ghana', r'accra', r'\.gh\b', r'加纳'],
-        "iran": [r'iran', r'tehran', r'\.ir\b', r'伊朗'],
-        "jordan": [r'jordan', r'ammam', r'\.jo\b', r'约旦'],
-        "kazakhstan": [r'kazakhstan', r'astana', r'\.kz\b', r'哈萨克斯坦'],
-        "kuwait": [r'kuwait', r'kuwait city', r'\.kw\b', r'科威特'],
-        "lebanon": [r'lebanon', r'beirut', r'\.lb\b', r'黎巴嫩'],
-        "libya": [r'libya', r'tripoli', r'\.ly\b', r'利比亚'],
-        "morocco": [r'morocco', r'rabat', r'\.ma\b', r'摩洛哥'],
-        "nepal": [r'nepal', r'kathmandu', r'\.np\b', r'尼泊尔'],
-        "oman": [r'oman', r'muscat', r'\.om\b', r'阿曼'],
-        "pakistan": [r'pakistan', r'islamabad', r'\.pk\b', r'巴基斯坦'],
-        "qatar": [r'qatar', r'doha', r'\.qa\b', r'卡塔尔'],
-        "serbia": [r'serbia', r'belgrade', r'\.rs\b', r'塞尔维я'],
-        "slovakia": [r'slovakia', r'bratislava', r'\.sk\b', r'斯洛伐克'],
-        "slovenia": [r'slovenia', r'ljubljana', r'\.si\b', r'斯洛文尼亚'],
-        "sudan": [r'sudan', r'khartoum', r'\.sd\b', r'苏丹'],
-        "syria": [r'syria', r'damascus', r'\.sy\b', r'叙利亚'],
-        "tunisia": [r'tunisia', r'tunis', r'\.tn\b', r'突尼斯'],
-        "uruguay": [r'uruguay', r'montevideo', r'\.uy\b', r'乌拉圭'],
-        "uzbekistan": [r'uzbekistan', r'tashkent', r'\.uz\b', r'乌兹бекстан'],
-        "yemen": [r'yemen', r'sanaa', r'\.ye\b', r'也门']
-    }
-    
     # Быстрая проверка по ключевым словам
-    if target_country in patterns:
+    if target_country in COUNTRY_PATTERNS:
         config_lower = config.lower()
-        for pattern in patterns[target_country]:
+        for pattern in COUNTRY_PATTERNS[target_country]:
             if re.search(pattern, config_lower):
                 return True
     return False
@@ -1170,7 +1101,8 @@ def main() -> None:
             WAITING_MODE: [CallbackQueryHandler(button_handler)],
             WAITING_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number)],
             SENDING_CONFIGS: [CallbackQueryHandler(button_handler)],
-            PROCESSING_STRICT: [CallbackQueryHandler(button_handler)]
+            PROCESSING_STRICT: [CallbackQueryHandler(button_handler)],
+            PROCESSING_SIMPLE: [CallbackQueryHandler(button_handler)]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
