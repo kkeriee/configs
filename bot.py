@@ -964,7 +964,7 @@ async def handle_number(update: Update, context: CallbackContext):
         return WAITING_NUMBER
 
 async def send_configs(update: Update, context: CallbackContext):
-    """Отправка конфигов пользователю с улучшенной обработкой"""
+    """Отправка конфигов пользователю в формате кода с заголовком страны"""
     user_id = update.message.from_user.id
     matched_configs = context.user_data.get('matched_configs', [])
     country_name = context.user_data.get('country', '')
@@ -978,24 +978,26 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     
-    # Форматируем заголовок как в примере
+    # Формируем заголовок в требуемом формате
     header = f"Конфиги для {country_name}:\n"
+    full_text = header + "\n\n".join(matched_configs)
+    
+    # Разбиваем текст на части, не превышающие лимит Telegram
     messages = []
-    current_message = header
-    
-    for config in matched_configs:
-        config_line = f"{config}\n\n"
+    while full_text:
+        # Находим позицию для разбиения, чтобы не разрывать конфиг
+        split_pos = min(MAX_MSG_LENGTH, len(full_text))
+        if split_pos < len(full_text):
+            # Ищем последний перенос строки перед split_pos
+            split_pos = full_text.rfind('\n', 0, split_pos)
+            if split_pos == -1:
+                # Если переносов нет, разбиваем по максимальной длине
+                split_pos = min(MAX_MSG_LENGTH, len(full_text))
         
-        # Проверяем, не превысит ли добавление этой строки лимит
-        if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
-            messages.append(current_message)
-            current_message = header + config_line
-        else:
-            current_message += config_line
-    
-    # Добавляем последнее сообщение
-    if len(current_message) > len(header):
-        messages.append(current_message)
+        # Добавляем часть текста в сообщения
+        part = full_text[:split_pos]
+        messages.append(part)
+        full_text = full_text[split_pos:]
     
     # Отправляем сообщения
     total_messages = len(messages)
@@ -1005,9 +1007,11 @@ async def send_configs(update: Update, context: CallbackContext):
             break
             
         try:
+            # Отправляем как код с форматированием
             await context.bot.send_message(
                 chat_id=user_id,
-                text=message,
+                text=f"```\n{message}\n```",
+                parse_mode="Markdown",
                 disable_web_page_preview=True
             )
             
@@ -1024,9 +1028,11 @@ async def send_configs(update: Update, context: CallbackContext):
         except Exception as e:
             logger.error(f"Ошибка отправки сообщения: {e}")
             try:
+                # Пытаемся отправить без форматирования, если возникла ошибка
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"⚠️ Ошибка отправки части {i+1}. Продолжаю..."
+                    text=message,
+                    disable_web_page_preview=True
                 )
             except Exception as e2:
                 logger.error(f"Ошибка отправки текстового сообщения: {e2}")
@@ -1176,21 +1182,26 @@ def initialize_geoip_database_sync() -> bool:
         # Скачиваем базу
         geoip_urls = [
             f"https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz",
-            f"https://cdn.jsdelivr.net/gh/Dreamacro/maxmind-geoip@release/Country.mmdb"
+            "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb",
+            "https://cdn.jsdelivr.net/gh/Dreamacro/maxmind-geoip@release/Country.mmdb"
         ]
         
         for geoip_url in geoip_urls:
             try:
                 logger.info(f"Скачивание базы геолокации: {geoip_url}")
-                response = requests.get(geoip_url, timeout=30)
+                response = requests.get(geoip_url, timeout=30, stream=True)
                 
                 if response.status_code == 200:
+                    content = b""
+                    for chunk in response.iter_content(chunk_size=8192):
+                        content += chunk
+                    
                     # Распаковываем gzip если нужно
                     if geoip_url.endswith('.gz'):
-                        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
+                        with gzip.GzipFile(fileobj=io.BytesIO(content)) as gz_file:
                             db_content = gz_file.read()
                     else:
-                        db_content = response.content
+                        db_content = content
                     
                     # Сохраняем в кэш
                     with open(cached_file, 'wb') as f:
@@ -1202,17 +1213,17 @@ def initialize_geoip_database_sync() -> bool:
                     logger.info(f"База геолокации успешно загружена и сохранена в кэш: {cached_file}")
                     return True
             except Exception as e:
-                logger.error(f"Ошибка загрузки базы: {e}")
+                logger.error(f"Ошибка загрузки базы {geoip_url}: {e}")
         
         # Если текущий месяц не доступен, пробуем предыдущий
         prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-        cached_file = os.path.join(cache_dir, f"dbip-country-lite-{prev_month}.mmdb")
+        cached_file_prev = os.path.join(cache_dir, f"dbip-country-lite-{prev_month}.mmdb")
         
-        if os.path.exists(cached_file):
+        if os.path.exists(cached_file_prev):
             try:
-                geoip_db = maxminddb.open_database(cached_file)
-                geoip_file_path = cached_file
-                logger.info(f"Используется кэшированная база за предыдущий месяц: {cached_file}")
+                geoip_db = maxminddb.open_database(cached_file_prev)
+                geoip_file_path = cached_file_prev
+                logger.info(f"Используется кэшированная база за предыдущий месяц: {cached_file_prev}")
                 return True
             except Exception as e:
                 logger.error(f"Ошибка открытия кэшированной базы: {e}")
@@ -1234,8 +1245,16 @@ async def post_init(application: Application) -> None:
     """Асинхронная инициализация после запуска приложения"""
     try:
         logger.info("Инициализация базы геолокации...")
-        if not await initialize_geoip_database():
+        success = await initialize_geoip_database()
+        if not success:
             logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
+            # Пробуем альтернативный источник
+            logger.info("Попытка использования локальной копии базы...")
+            try:
+                geoip_db = maxminddb.open_database('Country.mmdb')
+                logger.info("Локальная копия базы геолокации успешно загружена")
+            except:
+                logger.error("Не удалось загрузить локальную копию базы")
         else:
             logger.info("База геолокации успешно загружена")
     except Exception as e:
