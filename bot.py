@@ -12,6 +12,9 @@ import asyncio
 import random
 import io
 import gzip
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from datetime import datetime, timedelta
 from collections import OrderedDict
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -55,17 +58,33 @@ GEOLOCATION_TIMEOUT = 15.0  # Таймаут для геолокации (сек
 DNS_TIMEOUT = 8.0  # Таймаут для DNS-запросов (секунды)
 CACHE_MAX_SIZE = 5000  # Максимальный размер кэшей
 CACHE_TTL = 3600  # Время жизни кэша в секундах
+PORT = int(os.environ.get('PORT', 8080))  # Порт для Render
 
 # Состояния разговора
 START, WAITING_FILE, WAITING_COUNTRY, WAITING_NUMBER = range(4)
 
-# Поддерживаемые протоколы
-SUPPORTED_PROTOCOLS = ['vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 'https']
+# Поддерживаемые протоколы (расширенный список)
+SUPPORTED_PROTOCOLS = [
+    'vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 'https',
+    'ss://', 'trojan-go://', 'snell://', 'hy2://', 'tuic://', 'wireguard://',
+    'hysteria://', 'hysteria2://', 'naive://', 'wg://', 'brook://'
+]
 
 # Глобальные переменные для геолокации
 geoip_file_path = None
 geoip_db = None
 geoip_db_lock = asyncio.Lock()
+
+# Простой HTTP-сервер для проверки работоспособности
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+
+def run_health_check():
+    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    server.serve_forever()
 
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
@@ -89,9 +108,6 @@ def create_progress_bar(progress: float, length: int = 20) -> str:
 def is_config_relevant(config: str, target_country: str, country_codes: list) -> bool:
     """
     Проверка релевантности конфига с оптимизированным поиском
-    
-    ОСНОВНОЕ ИСПРАВЛЕНИЕ: улучшена обработка названий стран для соответствия
-    формату, используемому в COUNTRY_PATTERNS
     """
     config_lower = config.lower()
     
@@ -112,9 +128,6 @@ def is_config_relevant(config: str, target_country: str, country_codes: list) ->
 def detect_by_keywords(config_lower: str, target_country: str) -> bool:
     """
     Обнаружение страны по ключевым словам
-    
-    ОСНОВНОЕ ИСПРАВЛЕНИЕ: добавлена нормализация названия страны для
-    корректного поиска в COUNTRY_PATTERNS
     """
     # Нормализуем целевую страну к формату, используемому в COUNTRY_PATTERNS
     normalized_target = normalize_country_name(target_country)
@@ -156,7 +169,7 @@ def extract_host(config: str) -> str:
                 logger.debug(f"Ошибка обработки VLESS: {e}")
         
         # Trojan
-        if config.startswith('trojan://'):
+        if config.startswith('trojan://') or config.startswith('trojan-go://'):
             try:
                 # Извлечение хоста из URL
                 url = config.split('://')[1].split('?')[0]
@@ -165,18 +178,40 @@ def extract_host(config: str) -> str:
             except Exception as e:
                 logger.debug(f"Ошибка обработки Trojan: {e}")
         
+        # Shadowsocks
+        if config.startswith('ss://'):
+            try:
+                # Удалить префикс
+                url = config.split('://')[1]
+                # Проверка на наличие @ (userinfo)
+                if '@' in url:
+                    # Формат: метод:пароль@хост:порт
+                    userinfo, hostport = url.split('@', 1)
+                    host = hostport.split(':')[0]
+                    return host
+                else:
+                    # Base64 формат
+                    decoded = base64.b64decode(url.split('#')[0] + '==').decode('utf-8', errors='replace')
+                    if '@' in decoded:
+                        host = decoded.split('@')[1].split(':')[0]
+                        return host
+            except Exception as e:
+                logger.debug(f"Ошибка обработки Shadowsocks: {e}")
+        
         # Общий случай
         patterns = [
             r'\b(?:\d{1,3}\.){3}\d{1,3}\b',  # IPv4
             r'([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}',  # Домен
             r'@([\w\.-]+):?',  # Формат user@host:port
             r'host\s*[:=]\s*"([^"]+)"',  # JSON-формат
-            r'address\s*=\s*([\w\.-]+)'  # Конфигурационные файлы
+            r'address\s*=\s*([\w\.-]+)',  # Конфигурационные файлы
+            r'server\s*=\s*([\w\.-]+)',  # Серверные настройки
+            r'hostname\s*=\s*([\w\.-]+)'  # Имя хоста
         ]
         for pattern in patterns:
             match = re.search(pattern, config, re.IGNORECASE)
             if match:
-                return match.group(0)
+                return match.group(1) if match.groups() else match.group(0)
     except Exception as e:
         logger.debug(f"Ошибка извлечения хоста: {e}")
     return None
@@ -271,9 +306,9 @@ async def handle_file(update: Update, context: CallbackContext):
             stripped = line.strip()
             if stripped:
                 # Проверка на начало нового конфига
-                if any(stripped.startswith(proto + "://") for proto in SUPPORTED_PROTOCOLS):
+                if any(stripped.startswith(proto) for proto in SUPPORTED_PROTOCOLS):
                     if current_config:
-                        configs.append("".join(current_config))
+                        configs.append("\n".join(current_config))
                         current_config = []
                     # Проверка лимита
                     if len(configs) >= MAX_CONFIGS:
@@ -282,7 +317,7 @@ async def handle_file(update: Update, context: CallbackContext):
         
         # Добавляем последний конфиг
         if current_config and len(configs) < MAX_CONFIGS:
-            configs.append("".join(current_config))
+            configs.append("\n".join(current_config))
         
         # Удаляем временный файл
         os.unlink(file_path)
@@ -335,14 +370,18 @@ async def handle_country(update: Update, context: CallbackContext):
         
         # Предлагаем выбор режима поиска
         keyboard = [
-            [InlineKeyboardButton("🔍 Простой поиск (быстрый)", callback_data='simple_search')],
-            [InlineKeyboardButton("🔍 Строгий поиск (точный)", callback_data='strict_search')],
+            [InlineKeyboardButton("🔍 Быстрый поиск (по флагу)", callback_data='simple_search')],
+            [InlineKeyboardButton("🔍 Строгий поиск (проверка IP)", callback_data='strict_search')],
+            [InlineKeyboardButton("🔍 Комбинированный поиск", callback_data='combined_search')],
             [InlineKeyboardButton("🔙 Назад", callback_data='back_to_country')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"🌍 Страна установлена: {country_name}\n\n"
-            "Выберите режим поиска:",
+            "Выберите режим поиска:\n"
+            "• Быстрый: по ключевым словам и доменам\n"
+            "• Строгий: проверка геолокации IP\n"
+            "• Комбинированный: оба метода",
             reply_markup=reply_markup
         )
         return START
@@ -354,8 +393,8 @@ async def handle_country(update: Update, context: CallbackContext):
         return WAITING_COUNTRY
 
 async def simple_search(update: Update, context: CallbackContext):
-    """Простой поиск конфигов только по ключевым словам и доменам"""
-    user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
+    """Быстрый поиск конфигов по ключевым словам и доменам"""
+    user_id = update.callback_query.from_user.id
     configs = context.user_data.get('configs', [])
     target_country = context.user_data.get('target_country', '')
     country_codes = context.user_data.get('country_codes', [])
@@ -364,7 +403,7 @@ async def simple_search(update: Update, context: CallbackContext):
     if not isinstance(country_codes, list):
         country_codes = []
     
-    logger.info(f"Начало простого поиска. Конфигов: {len(configs)}, Страна: {target_country}, Коды страны: {country_codes}")
+    logger.info(f"Начало быстрого поиска. Конфигов: {len(configs)}, Страна: {target_country}, Коды страны: {country_codes}")
     
     if not configs or not target_country:
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
@@ -372,7 +411,7 @@ async def simple_search(update: Update, context: CallbackContext):
 
     start_time = time.time()
     matched_configs = []
-    progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Начинаю простой поиск...")
+    progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Начинаю быстрый поиск...")
     total_configs = len(configs)
     processed = 0
     context.user_data['simple_search_in_progress'] = True
@@ -398,7 +437,7 @@ async def simple_search(update: Update, context: CallbackContext):
                 await context.bot.edit_message_text(
                     chat_id=user_id,
                     message_id=progress_msg.message_id,
-                    text=f"🔎 Простой поиск: {progress_bar} {progress:.1f}%\n"
+                    text=f"🔎 Быстрый поиск: {progress_bar} {progress:.1f}%\n"
                          f"Обработано: {processed}/{total_configs}")
                 context.user_data['progress_last_update'] = time.time()
             
@@ -432,18 +471,19 @@ async def simple_search(update: Update, context: CallbackContext):
         return WAITING_NUMBER
     except Exception as e:
         context.user_data['simple_search_in_progress'] = False
-        logger.error(f"Ошибка простого поиска: {e}", exc_info=True)
+        logger.error(f"Ошибка быстрого поиска: {e}", exc_info=True)
         await context.bot.edit_message_text(
             chat_id=user_id,
             message_id=progress_msg.message_id,
-            text="❌ Произошла ошибка при простом поиске конфигураций.")
+            text="❌ Произошла ошибка при быстром поиске конфигураций.")
         return ConversationHandler.END
 
 async def strict_search(update: Update, context: CallbackContext):
     """Строгий поиск конфигов с проверкой геолокации"""
-    user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
+    user_id = update.callback_query.from_user.id
     configs = context.user_data.get('configs', [])
     target_country = context.user_data.get('target_country', '')
+    country_codes = [code.lower() for code in context.user_data.get('country_codes', [])]
     
     if not configs or not target_country:
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
@@ -457,44 +497,10 @@ async def strict_search(update: Update, context: CallbackContext):
     context.user_data['strict_in_progress'] = True
     
     try:
-        # Этап 1: Предварительный отбор по ключевым словам
-        prelim_configs = []
-        for i, config in enumerate(configs):
-            if context.user_data.get('stop_strict_search'):
-                break
-            try:
-                if is_config_relevant(config, target_country, context.user_data['country_codes']):
-                    prelim_configs.append(config)
-            except Exception as e:
-                logger.error(f"Ошибка проверки конфига #{i}: {e}")
-            processed += 1
-            # Регулярное обновление прогресса
-            if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL or i == total_configs - 1:
-                progress = min(processed / total_configs * 100, 100)
-                progress_bar = create_progress_bar(progress)
-                await context.bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=progress_msg.message_id,
-                    text=f"🔎 Этап 1: {progress_bar} {progress:.1f}%\n"
-                         f"Обработано: {processed}/{total_configs}")
-                context.user_data['progress_last_update'] = time.time()
-            # Проверка необходимости остановки
-            if context.user_data.get('stop_strict_search'):
-                break
-        
-        logger.info(f"Предварительно найдено {len(prelim_configs)} конфигов, обработка заняла {time.time()-start_time:.2f} сек")
-        
-        if not prelim_configs:
-            await context.bot.edit_message_text(
-                chat_id=user_id,
-                message_id=progress_msg.message_id,
-                text=f"❌ Конфигурации для {target_country} не найдены.")
-            return ConversationHandler.END
-        
         # Группировка конфигов по хостам
         host_to_configs = {}
         configs_without_host = 0
-        for config in prelim_configs:
+        for config in configs:
             host = extract_host(config)
             if host:
                 if host not in host_to_configs:
@@ -514,68 +520,68 @@ async def strict_search(update: Update, context: CallbackContext):
                 text=f"❌ Не найдено хостов для проверки геолокации.")
             return ConversationHandler.END
         
-        # Этап 2: Проверка геолокации для уникальных хостов
-        host_country_map = {}
-        total_processed = 0
-        stop_search = False
+        # Создаем семафор для ограничения количества параллельных запросов
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_DNS)
         
-        for host in unique_hosts:
-            if context.user_data.get('stop_strict_search'):
-                stop_search = True
-                break
-            
-            try:
-                # Асинхронное разрешение имени хоста
-                resolver = dns.asyncresolver.Resolver()
-                resolver.timeout = DNS_TIMEOUT
-                resolver.lifetime = DNS_TIMEOUT
-                answer = await resolver.resolve(host, 'A')
-                if answer:
-                    ip = answer[0].address
-                else:
-                    ip = None
+        # Функция для разрешения хоста
+        async def resolve_host(host):
+            async with semaphore:
+                try:
+                    resolver = dns.asyncresolver.Resolver()
+                    resolver.timeout = DNS_TIMEOUT
+                    resolver.lifetime = DNS_TIMEOUT
+                    answer = await resolver.resolve(host, 'A')
+                    if answer:
+                        return host, answer[0].address
+                except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, 
+                        dns.resolver.Timeout, dns.exception.DNSException) as e:
+                    logger.debug(f"Не удалось разрешить {host}: {e}")
+                except Exception as e:
+                    logger.debug(f"Неизвестная ошибка при разрешении {host}: {e}")
+                return host, None
+        
+        # Разрешаем все хосты параллельно
+        tasks = [resolve_host(host) for host in unique_hosts]
+        results = await asyncio.gather(*tasks)
+        host_ip_map = {host: ip for host, ip in results}
+        
+        # Проверяем геолокацию IP
+        host_country_map = {}
+        for host, ip in host_ip_map.items():
+            if not ip:
+                continue
                 
-                if ip:
-                    # Проверяем геолокацию
-                    async with geoip_db_lock:
-                        if geoip_db:
-                            try:
-                                match = geoip_db.get(ip)
-                                if match and 'country' in match:
-                                    country_iso = match['country']['iso_code'].lower()
-                                    host_country_map[host] = country_iso
-                            except Exception as e:
-                                logger.debug(f"Ошибка геолокации для {host}: {e}")
-                else:
-                    logger.debug(f"Не удалось разрешить {host}")
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.Timeout, dns.exception.DNSException) as e:
-                logger.debug(f"Не удалось разрешить {host}: {e}")
+            if context.user_data.get('stop_strict_search'):
+                break
+                
+            try:
+                async with geoip_db_lock:
+                    if geoip_db:
+                        try:
+                            match = geoip_db.get(ip)
+                            if match and 'country' in match:
+                                country_iso = match['country']['iso_code'].lower()
+                                host_country_map[host] = country_iso
+                        except Exception as e:
+                            logger.debug(f"Ошибка геолокации для {host}: {e}")
             except Exception as e:
-                logger.debug(f"Неизвестная ошибка при разрешении {host}: {e}")
+                logger.error(f"Ошибка при обработке геолокации: {e}")
             
-            total_processed += 1
             # Обновление прогресса
+            total_processed = len(host_country_map)
             if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL:
                 progress = min(total_processed / total_hosts * 100, 100)
                 progress_bar = create_progress_bar(progress)
                 await context.bot.edit_message_text(
                     chat_id=user_id,
                     message_id=progress_msg.message_id,
-                    text=f"🔎 Этап 2: {progress_bar} {progress:.1f}%\n"
+                    text=f"🔎 Проверка геолокации: {progress_bar} {progress:.1f}%\n"
                          f"Обработано: {total_processed}/{total_hosts}")
                 context.user_data['progress_last_update'] = time.time()
-            
-            # Проверка необходимости остановки
-            if context.user_data.get('stop_strict_search'):
-                stop_search = True
-                break
         
         # Сбор валидных конфигов
-        for host in unique_hosts:
-            if context.user_data.get('stop_strict_search'):
-                break
-            country = host_country_map.get(host)
-            if country and country.lower() == target_country.split()[-1].lower():
+        for host, country in host_country_map.items():
+            if country in country_codes:
                 valid_configs.extend(host_to_configs[host])
         
         total_time = time.time() - start_time
@@ -609,6 +615,83 @@ async def strict_search(update: Update, context: CallbackContext):
             chat_id=user_id,
             message_id=progress_msg.message_id,
             text="❌ Произошла ошибка при строгом поиске конфигураций.")
+        return ConversationHandler.END
+
+async def combined_search(update: Update, context: CallbackContext):
+    """Комбинированный поиск: быстрый + строгий"""
+    user_id = update.callback_query.from_user.id
+    configs = context.user_data.get('configs', [])
+    target_country = context.user_data.get('target_country', '')
+    country_codes = [code.lower() for code in context.user_data.get('country_codes', [])]
+    
+    if not configs or not target_country:
+        await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
+        return ConversationHandler.END
+
+    start_time = time.time()
+    progress_msg = await context.bot.send_message(chat_id=user_id, text="🔎 Начинаю комбинированный поиск...")
+    context.user_data['strict_in_progress'] = True
+    
+    try:
+        # Этап 1: Быстрый поиск
+        prelim_configs = []
+        total_configs = len(configs)
+        processed = 0
+        
+        for i, config in enumerate(configs):
+            if context.user_data.get('stop_strict_search'):
+                break
+            try:
+                if is_config_relevant(config, target_country, country_codes):
+                    prelim_configs.append(config)
+            except Exception as e:
+                logger.error(f"Ошибка проверки конфига #{i}: {e}")
+            processed += 1
+            # Регулярное обновление прогресса
+            if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL or i == total_configs - 1:
+                progress = min(processed / total_configs * 100, 100)
+                progress_bar = create_progress_bar(progress)
+                await context.bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=progress_msg.message_id,
+                    text=f"🔎 Этап 1 (быстрый): {progress_bar} {progress:.1f}%\n"
+                         f"Обработано: {processed}/{total_configs}")
+                context.user_data['progress_last_update'] = time.time()
+        
+        logger.info(f"Быстрый поиск: найдено {len(prelim_configs)} конфигов")
+        
+        if not prelim_configs:
+            await context.bot.edit_message_text(
+                chat_id=user_id,
+                message_id=progress_msg.message_id,
+                text=f"❌ Конфигурации для {target_country} не найдены.")
+            return ConversationHandler.END
+        
+        # Этап 2: Строгая проверка геолокации
+        await context.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=progress_msg.message_id,
+            text=f"🔎 Этап 2 (строгий): начинаю проверку {len(prelim_configs)} конфигов..."
+        )
+        
+        # Временно сохраняем конфиги для строгой проверки
+        original_configs = context.user_data['configs']
+        context.user_data['configs'] = prelim_configs
+        
+        # Вызываем строгий поиск на отфильтрованном наборе
+        result = await strict_search(update, context)
+        
+        # Восстанавливаем оригинальные конфиги
+        context.user_data['configs'] = original_configs
+        return result
+        
+    except Exception as e:
+        logger.error(f"Ошибка комбинированного поиска: {e}", exc_info=True)
+        context.user_data['strict_in_progress'] = False
+        await context.bot.edit_message_text(
+            chat_id=user_id,
+            message_id=progress_msg.message_id,
+            text="❌ Произошла ошибка при комбинированном поиске.")
         return ConversationHandler.END
 
 async def handle_number(update: Update, context: CallbackContext):
@@ -658,23 +741,16 @@ async def send_configs(update: Update, context: CallbackContext):
         return ConversationHandler.END
     
     # Подготавливаем сообщения
-    header = f"Конфиги для {country_name}:"
+    header = f"Конфиги для {country_name}:\n\n"
     messages = []
     current_message = header
     
     for config in matched_configs:
-        config_line = f"{config}\n"
+        config_line = f"{config}\n\n"
         # Проверяем, не превысит ли добавление этой строки лимит
         if len(current_message) + len(config_line) > MAX_MSG_LENGTH:
             messages.append(current_message)
-            current_message = header + config_line  # Начинаем новое сообщение с заголовка
-        
-        # Если даже одна строка конфига слишком длинная
-        if len(config_line) > MAX_MSG_LENGTH:
-            # Разбиваем длинный конфиг на части
-            for i in range(0, len(config_line), MAX_MSG_LENGTH - len(header) - 1):
-                part = config_line[i:i + MAX_MSG_LENGTH - len(header) - 1]
-                messages.append(header + part)
+            current_message = header + config_line
         else:
             current_message += config_line
     
@@ -683,6 +759,7 @@ async def send_configs(update: Update, context: CallbackContext):
         messages.append(current_message)
     
     # Отправляем сообщения
+    total_messages = len(messages)
     for i, message in enumerate(messages):
         if context.user_data.get('stop_sending'):
             break
@@ -695,7 +772,7 @@ async def send_configs(update: Update, context: CallbackContext):
             )
             # Обновляем прогресс
             if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL:
-                progress = min((i + 1) / len(messages) * 100, 100)
+                progress = min((i + 1) / total_messages * 100, 100)
                 progress_bar = create_progress_bar(progress)
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -750,6 +827,9 @@ async def button_handler(update: Update, context: CallbackContext):
         return WAITING_NUMBER
     elif query.data == 'strict_search':
         await strict_search(update, context)
+        return WAITING_NUMBER
+    elif query.data == 'combined_search':
+        await combined_search(update, context)
         return WAITING_NUMBER
     elif query.data == 'stop_sending':
         context.user_data['stop_sending'] = True
@@ -822,11 +902,20 @@ def initialize_geoip_database_sync() -> bool:
     global geoip_file_path, geoip_db
     
     try:
-        # URL бесплатной базы данных от db-ip.com (обновляется ежемесячно)
-        geoip_url = "https://download.db-ip.com/free/dbip-country-lite-2024-08.mmdb.gz"
+        # Генерируем URL для текущего месяца
+        now = datetime.utcnow()
+        year_month = now.strftime("%Y-%m")
+        geoip_url = f"https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz"
         
         logger.info(f"Скачивание базы геолокации: {geoip_url}")
         response = requests.get(geoip_url)
+        if response.status_code != 200:
+            # Если за текущий месяц не найдено, пробуем предыдущий месяц
+            prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+            geoip_url = f"https://download.db-ip.com/free/dbip-country-lite-{prev_month}.mmdb.gz"
+            logger.info(f"Пробуем предыдущий месяц: {geoip_url}")
+            response = requests.get(geoip_url)
+        
         if response.status_code != 200:
             logger.error(f"Не удалось скачать базу геолокации: {response.status_code}")
             return False
@@ -875,6 +964,11 @@ async def post_init(application: Application) -> None:
 
 def main() -> None:
     """Основная функция запуска бота с улучшенной обработкой"""
+    # Запуск HTTP-сервера для проверки работоспособности (для Render)
+    health_thread = threading.Thread(target=run_health_check, daemon=True)
+    health_thread.start()
+    logger.info(f"HTTP-сервер для проверки работоспособности запущен на порту {PORT}")
+    
     application = Application.builder().token(TOKEN).post_init(post_init).build()
     
     conv_handler = ConversationHandler(
@@ -898,7 +992,8 @@ def main() -> None:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
-        per_chat=True
+        per_chat=True,
+        per_message=True
     )
     
     application.add_handler(conv_handler)
