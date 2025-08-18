@@ -58,12 +58,19 @@ START, WAITING_FILE, WAITING_COUNTRY, WAITING_NUMBER = range(4)
 # Поддерживаемые протоколы
 SUPPORTED_PROTOCOLS = ['vmess', 'vless', 'trojan', 'ss', 'ssr', 'socks', 'http', 'https']
 
+# Глобальные переменные для геолокации
+geoip_file_path = None
+geoip_db = None
+geoip_db_lock = asyncio.Lock()
+
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
     keys_to_clear = [
         'matched_configs', 'current_index', 'stop_sending',
         'strict_in_progress', 'stop_strict_search', 'progress_message_id',
-        'progress_last_update', 'stop_simple_search', 'simple_search_in_progress'
+        'progress_last_update', 'stop_simple_search', 'simple_search_in_progress',
+        'country_request', 'country', 'target_country', 'country_codes',
+        'search_mode', 'file_path', 'file_paths'
     ]
     for key in keys_to_clear:
         if key in context.user_data:
@@ -297,7 +304,10 @@ async def handle_file(update: Update, context: CallbackContext):
         return START
     except Exception as e:
         logger.error(f"Ошибка обработки файла: {e}", exc_info=True)
-        os.unlink(file_path)
+        try:
+            os.unlink(file_path)
+        except:
+            pass
         await update.message.reply_text("❌ Ошибка при обработке файла. Убедитесь, что это текстовый файл.")
         return WAITING_FILE
 
@@ -514,7 +524,7 @@ async def strict_search(update: Update, context: CallbackContext):
                 # Получаем IP-адрес хоста
                 ip = socket.gethostbyname(host)
                 # Проверяем геолокацию
-                with geoip_db_lock:
+                async with geoip_db_lock:
                     if geoip_db:
                         try:
                             match = geoip_db.get(ip)
@@ -755,7 +765,10 @@ async def cancel(update: Update, context: CallbackContext):
     if 'simple_search_in_progress' in context.user_data:
         context.user_data['stop_simple_search'] = True
     
-    await update.callback_query.edit_message_text("❌ Операция отменена.") if update.callback_query else await update.message.reply_text("❌ Операция отменена.")
+    if update.callback_query:
+        await update.callback_query.edit_message_text("❌ Операция отменена.")
+    else:
+        await update.message.reply_text("❌ Операция отменена.")
     return ConversationHandler.END
 
 def check_rate_limit(user_id: int) -> bool:
@@ -770,10 +783,9 @@ def check_rate_limit(user_id: int) -> bool:
     
     # Реализация ограничения запросов
     current_time = time.time()
-    user_key = f"rate_limit:{user_id}"
     
     # Получаем историю запросов из user_data
-    request_history = context.user_data.get(user_key, [])
+    request_history = context.user_data.get(f"rate_limit:{user_id}", [])
     
     # Удаляем старые записи
     request_history = [t for t in request_history if current_time - t < 60]
@@ -784,9 +796,45 @@ def check_rate_limit(user_id: int) -> bool:
     
     # Добавляем новый запрос
     request_history.append(current_time)
-    context.user_data[user_key] = request_history
+    context.user_data[f"rate_limit:{user_id}"] = request_history
     
     return True
+
+def initialize_geoip_database_sync() -> bool:
+    """Синхронная инициализация базы геолокации"""
+    global geoip_file_path, geoip_db
+    
+    try:
+        # URL базы данных GeoLite2
+        geoip_url = "https://gitlab.com/aleksey-hq/CIDR-IP-Geolocation/-/raw/master/data/GeoLite2-Country.mmdb"
+        
+        # Скачиваем базу данных
+        response = requests.get(geoip_url)
+        if response.status_code != 200:
+            logger.error(f"Не удалось скачать базу геолокации: {response.status_code}")
+            return False
+        
+        # Создаем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mmdb') as tmp_file:
+            tmp_file.write(response.content)
+            geoip_file_path = tmp_file.name
+        
+        logger.info(f"Создан временный файл базы геолокации: {geoip_file_path}")
+        
+        # Загружаем базу
+        geoip_db = maxminddb.open_database(geoip_file_path)
+        logger.info("База геолокации успешно загружена")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка инициализации базы геолокации: {e}", exc_info=True)
+        geoip_db = None
+        if geoip_file_path and os.path.exists(geoip_file_path):
+            try:
+                os.unlink(geoip_file_path)
+            except:
+                pass
+            geoip_file_path = None
+        return False
 
 def post_init(application: Application) -> None:
     """Инициализация после запуска приложения с улучшенной обработкой ошибок"""
