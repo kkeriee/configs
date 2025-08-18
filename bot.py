@@ -14,7 +14,7 @@ import io
 import gzip
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from collections import OrderedDict
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,12 +25,14 @@ from telegram.ext import (
     filters,
     ConversationHandler,
     CallbackQueryHandler,
-    CallbackContext
+    CallbackContext,
+    ContextTypes
 )
 import maxminddb
 import dns.asyncresolver
 import dns.resolver
 import dns.exception
+
 # Импортируем данные о странах из отдельного файла
 from country_data import (
     FLAG_COUNTRY_MAP, 
@@ -55,10 +57,11 @@ MAX_CONCURRENT_DNS = 50  # Максимальное количество пар�
 MAX_CONFIGS = 40000  # Максимальное количество конфигураций для обработки
 PROGRESS_UPDATE_INTERVAL = 2.0  # Интервал обновления прогресс-бара (секунды)
 GEOLOCATION_TIMEOUT = 15.0  # Таймаут для геолокации (секунды)
-DNS_TIMEOUT = 8.0  # Таймаут для DNS-запросов (секунды)
+DNS_TIMEOUT = 15.0  # Увеличенный таймаут для DNS-запросов
 CACHE_MAX_SIZE = 5000  # Максимальный размер кэшей
 CACHE_TTL = 3600  # Время жизни кэша в секундах
 PORT = int(os.environ.get('PORT', 8080))  # Порт для Render
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "") + f"/{TOKEN}"  # URL для вебхука
 
 # Состояния разговора
 START, WAITING_FILE, WAITING_COUNTRY, WAITING_NUMBER = range(4)
@@ -75,15 +78,41 @@ geoip_file_path = None
 geoip_db = None
 geoip_db_lock = asyncio.Lock()
 
-# Простой HTTP-сервер для проверки работоспособности
-class HealthCheckHandler(BaseHTTPRequestHandler):
+# Класс для обработки HTTP запросов (вебхуки + health check)
+class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'OK')
+        if self.path == '/':
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-def run_health_check():
-    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    def do_POST(self):
+        if self.path == f'/{TOKEN}':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            asyncio.run(self.process_webhook(post_data))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    async def process_webhook(self, data):
+        """Асинхронная обработка вебхука"""
+        try:
+            update = Update.de_json(json.loads(data.decode('utf-8')), bot)
+            await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Ошибка обработки вебхука: {e}")
+
+def run_http_server():
+    """Запуск HTTP сервера для вебхуков и health check"""
+    server = HTTPServer(('0.0.0.0', PORT), WebhookHandler)
+    logger.info(f"HTTP сервер запущен на порту {PORT}")
     server.serve_forever()
 
 def clear_temporary_data(context: CallbackContext):
@@ -151,32 +180,40 @@ def extract_host(config: str) -> str:
         if config.startswith('vmess://'):
             try:
                 encoded = config.split('://')[1].split('?')[0]
+                # Добавляем padding для корректного декодирования base64
                 padding = '=' * (-len(encoded) % 4)
                 decoded = base64.b64decode(encoded + padding).decode('utf-8', errors='replace')
                 json_data = json.loads(decoded)
                 return json_data.get('host') or json_data.get('add', '')
             except Exception as e:
                 logger.debug(f"Ошибка декодирования VMess: {e}")
+                return None
         
         # VLESS
         if config.startswith('vless://'):
             try:
                 # Извлечение хоста из URL
-                url = config.split('://')[1].split('?')[0]
-                host = url.split('@')[1].split(':')[0]
+                url_part = config.split('://')[1].split('?')[0]
+                if '@' not in url_part:
+                    return None
+                host = url_part.split('@')[1].split(':')[0]
                 return host
             except Exception as e:
                 logger.debug(f"Ошибка обработки VLESS: {e}")
+                return None
         
         # Trojan
         if config.startswith('trojan://') or config.startswith('trojan-go://'):
             try:
                 # Извлечение хоста из URL
-                url = config.split('://')[1].split('?')[0]
-                host = url.split('@')[1].split(':')[0]
+                url_part = config.split('://')[1].split('?')[0]
+                if '@' not in url_part:
+                    return None
+                host = url_part.split('@')[1].split(':')[0]
                 return host
             except Exception as e:
                 logger.debug(f"Ошибка обработки Trojan: {e}")
+                return None
         
         # Shadowsocks
         if config.startswith('ss://'):
@@ -202,16 +239,20 @@ def extract_host(config: str) -> str:
                             return parts[0]
             except Exception as e:
                 logger.debug(f"Ошибка обработки Shadowsocks: {e}")
+                return None
         
         # Wireguard
         if config.startswith('wg://') or config.startswith('wireguard://'):
             try:
                 # Извлечение хоста из URL
-                url = config.split('://')[1].split('?')[0]
-                host = url.split('@')[1].split(':')[0]
+                url_part = config.split('://')[1].split('?')[0]
+                if '@' not in url_part:
+                    return None
+                host = url_part.split('@')[1].split(':')[0]
                 return host
             except Exception as e:
                 logger.debug(f"Ошибка обработки Wireguard: {e}")
+                return None
         
         # Общий случай
         patterns = [
@@ -921,7 +962,7 @@ def initialize_geoip_database_sync() -> bool:
     
     try:
         # Генерируем URL для текущего месяца
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         year_month = now.strftime("%Y-%m")
         geoip_url = f"https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz"
         
@@ -982,20 +1023,18 @@ async def post_init(application: Application) -> None:
 
 def main() -> None:
     """Основная функция запуска бота с улучшенной обработкой"""
-    # Запуск HTTP-сервера для проверки работоспособности (для Render)
-    health_thread = threading.Thread(target=run_health_check, daemon=True)
-    health_thread.start()
-    logger.info(f"HTTP-сервер для проверки работоспособности запущен на порту {PORT}")
+    global application, bot
     
-    # Создаем приложение с обработкой конфликтов
+    # Создаем приложение
     application = (
         Application.builder()
         .token(TOKEN)
         .post_init(post_init)
-        .concurrent_updates(False)  # Отключаем параллельные обновления
         .build()
     )
+    bot = application.bot
     
+    # Создаем обработчик диалога
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("check_configs", start_check)],
         states={
@@ -1024,12 +1063,26 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start_check))
     
-    # Запуск бота с обработкой конфликтов
-    logger.info("Запуск бота...")
-    application.run_polling(
-        drop_pending_updates=True,  # Игнорировать ожидающие обновления
-        allowed_updates=Update.ALL_TYPES  # Разрешить все типы обновлений
-    )
+    # Запускаем HTTP сервер в отдельном потоке
+    server_thread = threading.Thread(target=run_http_server, daemon=True)
+    server_thread.start()
+    
+    # Настраиваем вебхук
+    if WEBHOOK_URL:
+        logger.info(f"Настройка вебхука: {WEBHOOK_URL}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=WEBHOOK_URL,
+            url_path=f"/{TOKEN}",
+            drop_pending_updates=True
+        )
+    else:
+        logger.warning("WEBHOOK_URL не настроен, используем polling")
+        application.run_polling(
+            drop_pending_updates=True,
+            poll_interval=1.0
+        )
 
 if __name__ == '__main__':
     main()
