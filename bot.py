@@ -78,6 +78,10 @@ geoip_file_path = None
 geoip_db = None
 geoip_db_lock = asyncio.Lock()
 
+# Глобальные переменные для приложения и event loop
+app = None
+loop = None
+
 # Класс для обработки HTTP запросов (вебхуки + health check)
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -90,24 +94,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
+        global app, loop
         if self.path == f'/{TOKEN}':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
-            asyncio.run(self.process_webhook(post_data))
+            
+            # Обработка вебхука в основном event loop
+            if app and loop:
+                update = Update.de_json(json.loads(post_data.decode('utf-8')), app.bot)
+                asyncio.run_coroutine_threadsafe(
+                    app.process_update(update), 
+                    loop
+                )
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'OK')
         else:
             self.send_response(404)
             self.end_headers()
-    
-    async def process_webhook(self, data):
-        """Асинхронная обработка вебхука"""
-        try:
-            update = Update.de_json(json.loads(data.decode('utf-8')), bot)
-            await application.process_update(update)
-        except Exception as e:
-            logger.error(f"Ошибка обработки вебхука: {e}")
 
 def run_http_server():
     """Запуск HTTP сервера для вебхуков и health check"""
@@ -1021,9 +1025,12 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы геолокации: {e}", exc_info=True)
 
-def main() -> None:
-    """Основная функция запуска бота с улучшенной обработкой"""
-    global application, bot
+async def main() -> None:
+    """Основная асинхронная функция запуска бота"""
+    global app, loop
+    
+    # Получаем текущий event loop
+    loop = asyncio.get_event_loop()
     
     # Создаем приложение
     application = (
@@ -1032,7 +1039,12 @@ def main() -> None:
         .post_init(post_init)
         .build()
     )
-    bot = application.bot
+    app = application
+    
+    # Устанавливаем вебхук
+    if WEBHOOK_URL:
+        logger.info(f"Установка вебхука: {WEBHOOK_URL}")
+        await application.bot.set_webhook(WEBHOOK_URL)
     
     # Создаем обработчик диалога
     conv_handler = ConversationHandler(
@@ -1056,33 +1068,24 @@ def main() -> None:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
-        per_chat=True,
-        per_message=True
+        per_chat=True
     )
     
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start_check))
     
+    # Инициализация и запуск приложения
+    await application.initialize()
+    await application.start()
+    
     # Запускаем HTTP сервер в отдельном потоке
     server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
+    logger.info(f"HTTP сервер запущен в отдельном потоке на порту {PORT}")
     
-    # Настраиваем вебхук
-    if WEBHOOK_URL:
-        logger.info(f"Настройка вебхука: {WEBHOOK_URL}")
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=WEBHOOK_URL,
-            url_path=f"/{TOKEN}",
-            drop_pending_updates=True
-        )
-    else:
-        logger.warning("WEBHOOK_URL не настроен, используем polling")
-        application.run_polling(
-            drop_pending_updates=True,
-            poll_interval=1.0
-        )
+    # Бесконечный цикл ожидания
+    while True:
+        await asyncio.sleep(3600)  # Спим 1 час
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
