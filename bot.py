@@ -10,6 +10,8 @@ import time
 import socket
 import asyncio
 import random
+import io
+import gzip
 from collections import OrderedDict
 from urllib.parse import urlparse
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24,6 +26,8 @@ from telegram.ext import (
 )
 import maxminddb
 import dns.asyncresolver
+import dns.resolver
+import dns.exception
 # Импортируем данные о странах из отдельного файла
 from country_data import (
     FLAG_COUNTRY_MAP, 
@@ -197,7 +201,7 @@ async def generate_country_instructions(country: str) -> str:
 async def start_check(update: Update, context: CallbackContext):
     """Начало проверки конфигов с выбором действия"""
     # Проверка ограничения запросов для всех пользователей, кроме исключения
-    if update.message.from_user.id != 1040929628 and not check_rate_limit(update.message.from_user.id):
+    if update.message.from_user.id != 1040929628 and not check_rate_limit(update.message.from_user.id, context):
         await update.message.reply_text("❌ Слишком много запросов. Пожалуйста, подождите минуту.")
         return ConversationHandler.END
     
@@ -521,20 +525,33 @@ async def strict_search(update: Update, context: CallbackContext):
                 break
             
             try:
-                # Получаем IP-адрес хоста
-                ip = socket.gethostbyname(host)
-                # Проверяем геолокацию
-                async with geoip_db_lock:
-                    if geoip_db:
-                        try:
-                            match = geoip_db.get(ip)
-                            if match and 'country' in match:
-                                country_iso = match['country']['iso_code'].lower()
-                                host_country_map[host] = country_iso
-                        except Exception as e:
-                            logger.debug(f"Ошибка геолокации для {host}: {e}")
-            except Exception as e:
+                # Асинхронное разрешение имени хоста
+                resolver = dns.asyncresolver.Resolver()
+                resolver.timeout = DNS_TIMEOUT
+                resolver.lifetime = DNS_TIMEOUT
+                answer = await resolver.resolve(host, 'A')
+                if answer:
+                    ip = answer[0].address
+                else:
+                    ip = None
+                
+                if ip:
+                    # Проверяем геолокацию
+                    async with geoip_db_lock:
+                        if geoip_db:
+                            try:
+                                match = geoip_db.get(ip)
+                                if match and 'country' in match:
+                                    country_iso = match['country']['iso_code'].lower()
+                                    host_country_map[host] = country_iso
+                            except Exception as e:
+                                logger.debug(f"Ошибка геолокации для {host}: {e}")
+                else:
+                    logger.debug(f"Не удалось разрешить {host}")
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.Timeout, dns.exception.DNSException) as e:
                 logger.debug(f"Не удалось разрешить {host}: {e}")
+            except Exception as e:
+                logger.debug(f"Неизвестная ошибка при разрешении {host}: {e}")
             
             total_processed += 1
             # Обновление прогресса
@@ -706,7 +723,7 @@ async def button_handler(update: Update, context: CallbackContext):
     await query.answer()
     
     # Проверка ограничения запросов для всех пользователей, кроме исключения
-    if query.from_user.id != 1040929628 and not check_rate_limit(query.from_user.id):
+    if query.from_user.id != 1040929628 and not check_rate_limit(query.from_user.id, context):
         await query.edit_message_text("❌ Слишком много запросов. Пожалуйста, подождите минуту.")
         return ConversationHandler.END
     
@@ -771,7 +788,7 @@ async def cancel(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Операция отменена.")
     return ConversationHandler.END
 
-def check_rate_limit(user_id: int) -> bool:
+def check_rate_limit(user_id: int, context: CallbackContext) -> bool:
     """
     Проверка ограничения на количество запросов
     
@@ -805,18 +822,22 @@ def initialize_geoip_database_sync() -> bool:
     global geoip_file_path, geoip_db
     
     try:
-        # URL базы данных GeoLite2
-        geoip_url = "https://gitlab.com/aleksey-hq/CIDR-IP-Geolocation/-/raw/master/data/GeoLite2-Country.mmdb"
+        # URL бесплатной базы данных от db-ip.com (обновляется ежемесячно)
+        geoip_url = "https://download.db-ip.com/free/dbip-country-lite-2024-08.mmdb.gz"
         
-        # Скачиваем базу данных
+        logger.info(f"Скачивание базы геолокации: {geoip_url}")
         response = requests.get(geoip_url)
         if response.status_code != 200:
             logger.error(f"Не удалось скачать базу геолокации: {response.status_code}")
             return False
         
+        # Распаковываем gzip
+        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
+            db_content = gz_file.read()
+        
         # Создаем временный файл
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mmdb') as tmp_file:
-            tmp_file.write(response.content)
+            tmp_file.write(db_content)
             geoip_file_path = tmp_file.name
         
         logger.info(f"Создан временный файл базы геолокации: {geoip_file_path}")
@@ -836,11 +857,16 @@ def initialize_geoip_database_sync() -> bool:
             geoip_file_path = None
         return False
 
-def post_init(application: Application) -> None:
-    """Инициализация после запуска приложения с улучшенной обработкой ошибок"""
+async def initialize_geoip_database() -> bool:
+    """Асинхронная инициализация базы геолокации"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, initialize_geoip_database_sync)
+
+async def post_init(application: Application) -> None:
+    """Асинхронная инициализация после запуска приложения"""
     try:
         logger.info("Инициализация базы геолокации...")
-        if not initialize_geoip_database_sync():
+        if not await initialize_geoip_database():
             logger.error("Не удалось загрузить базу геолокации. Строгий поиск будет недоступен")
         else:
             logger.info("База геолокации успешно загружена")
