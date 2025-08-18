@@ -13,6 +13,7 @@ import random
 import io
 import gzip
 import threading
+import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta, UTC
 from collections import OrderedDict
@@ -310,6 +311,10 @@ def extract_domain(config: str) -> str:
     except Exception as e:
         logger.debug(f"Ошибка извлечения домена: {e}")
     return None
+
+def calculate_config_hash(config: str) -> str:
+    """Вычисление хеша SHA256 для конфига"""
+    return hashlib.sha256(config.encode('utf-8')).hexdigest()
 
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны"""
@@ -624,6 +629,16 @@ async def strict_search(update: Update, context: CallbackContext):
     target_country = context.user_data.get('target_country', '')
     country_codes = [code.lower() for code in context.user_data.get('country_codes', [])]
     
+    # Проверка доступности базы геолокации
+    if geoip_db is None:
+        logger.error("База геолокации не загружена, строгий поиск невозможен")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="❌ База геолокации не загружена. Строгий поиск невозможен."
+        )
+        context.user_data['strict_in_progress'] = False
+        return ConversationHandler.END
+    
     if not configs or not target_country:
         await context.bot.send_message(chat_id=user_id, text="❌ Ошибка: данные для поиска отсутствуют.")
         return ConversationHandler.END
@@ -638,7 +653,7 @@ async def strict_search(update: Update, context: CallbackContext):
     try:
         # Группировка конфигов по хостам
         host_to_configs = {}
-        configs_without_host = 0
+        configs_without_host = []
         
         for config in configs:
             host = extract_host(config)
@@ -649,24 +664,31 @@ async def strict_search(update: Update, context: CallbackContext):
                 host_to_configs[host].append(config)
             else:
                 # Сохраняем конфиги без хоста для ручной проверки
-                configs_without_host += 1
-                # Пробуем извлечь домен
-                domain = extract_domain(config)
-                if domain:
-                    if domain not in host_to_configs:
-                        host_to_configs[domain] = []
-                    host_to_configs[domain].append(config)
+                configs_without_host.append(config)
         
         unique_hosts = list(host_to_configs.keys())
         total_hosts = len(unique_hosts)
-        logger.info(f"Уникальных хостов: {total_hosts}, конфигов без хоста: {configs_without_host}")
+        logger.info(f"Уникальных хостов: {total_hosts}, конфигов без хоста: {len(configs_without_host)}")
+        
+        # Проверка конфигов без IP по хешу и ключевым словам
+        for config in configs_without_host:
+            # Проверяем по ключевым словам
+            if is_config_relevant(config, target_country, country_codes):
+                logger.debug(f"Конфиг без IP релевантен по ключевым словам: {calculate_config_hash(config)}")
+                valid_configs.append(config)
         
         if not unique_hosts:
             await context.bot.edit_message_text(
                 chat_id=user_id,
                 message_id=progress_msg.message_id,
-                text=f"❌ Не найдено хостов для проверки геолокации.")
-            return ConversationHandler.END
+                text=f"✅ Найдено {len(valid_configs)} конфигов без IP по ключевым словам."
+            )
+            context.user_data['matched_configs'] = valid_configs
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"🌍 Для страны {target_country} найдено {len(valid_configs)} валидных конфигов! Сколько конфигов прислать? (введите число от 1 до {len(valid_configs)})"
+            )
+            return WAITING_NUMBER
         
         # Создаем семафор для ограничения количества параллельных запросов
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_DNS)
@@ -956,7 +978,7 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     
-    # Подготавливаем сообщения
+    # Форматируем заголовок как в примере
     header = f"Конфиги для {country_name}:\n"
     messages = []
     current_message = header
@@ -1132,49 +1154,75 @@ def initialize_geoip_database_sync() -> bool:
     global geoip_file_path, geoip_db
     
     try:
+        # Проверяем наличие кэшированной базы
+        cache_dir = os.path.join(tempfile.gettempdir(), "geoip_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
         # Генерируем URL для текущего месяца
         now = datetime.now(UTC)
         year_month = now.strftime("%Y-%m")
-        geoip_url = f"https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz"
-        logger.info(f"Скачивание базы геолокации: {geoip_url}")
-        response = requests.get(geoip_url)
+        cached_file = os.path.join(cache_dir, f"dbip-country-lite-{year_month}.mmdb")
         
-        if response.status_code != 200:
-            # Если за текущий месяц не найдено, пробуем предыдущий месяц
-            prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
-            geoip_url = f"https://download.db-ip.com/free/dbip-country-lite-{prev_month}.mmdb.gz"
-            logger.info(f"Пробуем предыдущий месяц: {geoip_url}")
-            response = requests.get(geoip_url)
+        # Если файл уже есть в кэше, используем его
+        if os.path.exists(cached_file):
+            try:
+                geoip_db = maxminddb.open_database(cached_file)
+                geoip_file_path = cached_file
+                logger.info(f"Используется кэшированная база геолокации: {cached_file}")
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка открытия кэшированной базы: {e}")
         
-        if response.status_code != 200:
-            logger.error(f"Не удалось скачать базу геолокации: {response.status_code}")
-            return False
+        # Скачиваем базу
+        geoip_urls = [
+            f"https://download.db-ip.com/free/dbip-country-lite-{year_month}.mmdb.gz",
+            f"https://cdn.jsdelivr.net/gh/Dreamacro/maxmind-geoip@release/Country.mmdb"
+        ]
         
-        # Распаковываем gzip
-        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
-            db_content = gz_file.read()
+        for geoip_url in geoip_urls:
+            try:
+                logger.info(f"Скачивание базы геолокации: {geoip_url}")
+                response = requests.get(geoip_url, timeout=30)
+                
+                if response.status_code == 200:
+                    # Распаковываем gzip если нужно
+                    if geoip_url.endswith('.gz'):
+                        with gzip.GzipFile(fileobj=io.BytesIO(response.content)) as gz_file:
+                            db_content = gz_file.read()
+                    else:
+                        db_content = response.content
+                    
+                    # Сохраняем в кэш
+                    with open(cached_file, 'wb') as f:
+                        f.write(db_content)
+                    
+                    # Загружаем базу
+                    geoip_db = maxminddb.open_database(cached_file)
+                    geoip_file_path = cached_file
+                    logger.info(f"База геолокации успешно загружена и сохранена в кэш: {cached_file}")
+                    return True
+            except Exception as e:
+                logger.error(f"Ошибка загрузки базы: {e}")
         
-        # Создаем временный файл
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mmdb') as tmp_file:
-            tmp_file.write(db_content)
-            geoip_file_path = tmp_file.name
+        # Если текущий месяц не доступен, пробуем предыдущий
+        prev_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        cached_file = os.path.join(cache_dir, f"dbip-country-lite-{prev_month}.mmdb")
         
-        logger.info(f"Создан временный файл базы геолокации: {geoip_file_path}")
+        if os.path.exists(cached_file):
+            try:
+                geoip_db = maxminddb.open_database(cached_file)
+                geoip_file_path = cached_file
+                logger.info(f"Используется кэшированная база за предыдущий месяц: {cached_file}")
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка открытия кэшированной базы: {e}")
         
-        # Загружаем базу
-        geoip_db = maxminddb.open_database(geoip_file_path)
-        logger.info("База геолокации успешно загружена")
-        return True
+        logger.error("Не удалось загрузить базу геолокации ни из одного источника")
+        return False
         
     except Exception as e:
-        logger.error(f"Ошибка инициализации базы геолокации: {e}", exc_info=True)
+        logger.error(f"Критическая ошибка инициализации базы геолокации: {e}", exc_info=True)
         geoip_db = None
-        if geoip_file_path and os.path.exists(geoip_file_path):
-            try:
-                os.unlink(geoip_file_path)
-            except:
-                pass
-            geoip_file_path = None
         return False
 
 async def initialize_geoip_database() -> bool:
