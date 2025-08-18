@@ -643,11 +643,19 @@ async def strict_search(update: Update, context: CallbackContext):
         for config in configs:
             host = extract_host(config)
             if host:
+                host = host.lower()  # Нормализуем хост к нижнему регистру
                 if host not in host_to_configs:
                     host_to_configs[host] = []
                 host_to_configs[host].append(config)
             else:
+                # Сохраняем конфиги без хоста для ручной проверки
                 configs_without_host += 1
+                # Пробуем извлечь домен
+                domain = extract_domain(config)
+                if domain:
+                    if domain not in host_to_configs:
+                        host_to_configs[domain] = []
+                    host_to_configs[domain].append(config)
         
         unique_hosts = list(host_to_configs.keys())
         total_hosts = len(unique_hosts)
@@ -665,9 +673,11 @@ async def strict_search(update: Update, context: CallbackContext):
         
         # Функция для разрешения хоста с кэшированием
         async def resolve_host(host):
+            # Используем нижний регистр для кэша
+            host_lower = host.lower()
             # Проверка кэша
-            if host in dns_cache and (time.time() - dns_cache[host]['timestamp']) < CACHE_TTL:
-                return host, dns_cache[host]['ip']
+            if host_lower in dns_cache and (time.time() - dns_cache[host_lower]['timestamp']) < CACHE_TTL:
+                return host, dns_cache[host_lower]['ip']
             
             async with semaphore:
                 try:
@@ -677,8 +687,8 @@ async def strict_search(update: Update, context: CallbackContext):
                     answer = await resolver.resolve(host, 'A')
                     if answer:
                         ip = answer[0].address
-                        # Обновляем кэш
-                        dns_cache[host] = {'ip': ip, 'timestamp': time.time()}
+                        # Обновляем кэш в нижнем регистре
+                        dns_cache[host_lower] = {'ip': ip, 'timestamp': time.time()}
                         # Удаляем старые записи, если кэш переполнен
                         if len(dns_cache) > CACHE_MAX_SIZE:
                             oldest = next(iter(dns_cache))
@@ -691,7 +701,7 @@ async def strict_search(update: Update, context: CallbackContext):
                     logger.debug(f"Неизвестная ошибка при разрешении {host}: {e}")
             
             # Если не удалось разрешить, сохраняем в кэш как неудачу
-            dns_cache[host] = {'ip': None, 'timestamp': time.time()}
+            dns_cache[host_lower] = {'ip': None, 'timestamp': time.time()}
             return host, None
         
         # Разрешаем все хосты параллельно
@@ -702,6 +712,9 @@ async def strict_search(update: Update, context: CallbackContext):
         # Проверяем геолокацию IP
         host_country_map = {}
         total_processed = 0
+        
+        resolved_ips = [ip for ip in host_ip_map.values() if ip]
+        logger.info(f"Успешно разрешено IP: {len(resolved_ips)} из {total_hosts}")
         
         for host, ip in host_ip_map.items():
             if not ip:
@@ -721,18 +734,28 @@ async def strict_search(update: Update, context: CallbackContext):
                     if geoip_db:
                         try:
                             match = geoip_db.get(ip)
-                            if match and 'country' in match:
-                                country_iso = match['country']['iso_code'].lower()
-                                host_country_map[host] = country_iso
+                            if match:
+                                # Извлекаем код страны
+                                country = match.get('country', {})
+                                country_iso = country.get('iso_code', '').lower() if country else ''
                                 
-                                # Обновляем кэш
-                                geo_cache[ip] = {'country': country_iso, 'timestamp': time.time()}
-                                # Удаляем старые записи, если кэш переполнен
-                                if len(geo_cache) > CACHE_MAX_SIZE:
-                                    oldest = next(iter(geo_cache))
-                                    del geo_cache[oldest]
+                                if country_iso:
+                                    host_country_map[host] = country_iso
+                                    
+                                    # Обновляем кэш
+                                    geo_cache[ip] = {'country': country_iso, 'timestamp': time.time()}
+                                    # Удаляем старые записи, если кэш переполнен
+                                    if len(geo_cache) > CACHE_MAX_SIZE:
+                                        oldest = next(iter(geo_cache))
+                                        del geo_cache[oldest]
+                                else:
+                                    logger.debug(f"Для IP {ip} не найден код страны")
+                            else:
+                                logger.debug(f"Для IP {ip} не найдена запись в базе геолокации")
                         except Exception as e:
-                            logger.debug(f"Ошибка геолокации для {host}: {e}")
+                            logger.error(f"Ошибка геолокации для {host}: {e}")
+                    else:
+                        logger.error("База геолокации не загружена!")
             except Exception as e:
                 logger.error(f"Ошибка при обработке геолокации: {e}")
             
@@ -754,6 +777,11 @@ async def strict_search(update: Update, context: CallbackContext):
         for host, country in host_country_map.items():
             if country in country_codes:
                 valid_configs.extend(host_to_configs[host])
+            else:
+                logger.debug(f"Хост {host} (страна: {country}) не соответствует целевой стране {target_country} (коды: {country_codes})")
+        
+        logger.info(f"Коды страны для поиска: {country_codes}")
+        logger.info(f"Найдено хостов с совпадением страны: {len(valid_configs)}")
         
         total_time = time.time() - start_time
         context.user_data['strict_in_progress'] = False
