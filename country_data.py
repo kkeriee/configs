@@ -1,3 +1,10 @@
+"""
+country_data.py
+
+Этот файл содержит данные о странах, используемые в боте для поиска конфигураций.
+Данные вынесены из основного кода для удобства поддержки и обновления.
+"""
+
 # Соответствие флагов и названий стран
 FLAG_COUNTRY_MAP = {
     "🇷🇺": "russia",
@@ -60,7 +67,7 @@ FLAG_COUNTRY_MAP = {
     "🇨🇷": "costa rica",
     "🇭🇷": "croatia",
     "🇨🇺": "cuba",
-    "🇪🇪": "estonia",  # Эстония - одна из стран Прибалтики [[1]]
+    "🇪🇪": "estonia",  # Эстония - одна из стран Прибалтики
     "🇬🇪": "georgia",
     "🇬🇭": "ghana",
     "🇮🇷": "iran",
@@ -83,8 +90,8 @@ FLAG_COUNTRY_MAP = {
     "🇺🇾": "uruguay",
     "🇺🇿": "uzbekistan",
     "🇾🇪": "yemen",
-    "🇱🇻": "latvia",  
-    "🇱🇹": "lithuania" 
+    "🇱🇻": "latvia",   # Латвия - одна из стран Прибалтики
+    "🇱🇹": "lithuania" # Литва - одна из стран Прибалтики
 }
 
 # Коды стран (ISO Alpha-2)
@@ -149,7 +156,7 @@ COUNTRY_CODES = {
     "costa rica": ["cr"],
     "croatia": ["hr"],
     "cuba": ["cu"],
-    "estonia": ["ee"],
+    "estonia": ["ee"],  # Код Эстонии для Прибалтики
     "georgia": ["ge"],
     "ghana": ["gh"],
     "iran": ["ir"],
@@ -172,8 +179,8 @@ COUNTRY_CODES = {
     "uruguay": ["uy"],
     "uzbekistan": ["uz"],
     "yemen": ["ye"],
-    "latvia": ["lv"],
-    "lithuania": ["lt"] 
+    "latvia": ["lv"],   # Код Латвии для Прибалтики
+    "lithuania": ["lt"] # Код Литвы для Прибалтики
 }
 
 # Паттерны для определения стран в конфигурациях
@@ -190,70 +197,70 @@ COUNTRY_PATTERNS = {
     'turkey': [r'turkey', r'istanbul', r'\.tr\b', r'Turkiye', r'土耳其', r'伊斯坦布尔'],
     'taiwan': [r'taiwan', r'taipei', r'\.tw\b', r'Taiwan', r'台湾', r'台北'],
     'switzerland': [r'switzerland', r'zurich', r'\.ch\b', r'Schweiz', r'瑞士', r'蘇黎世'],
-    'india': [r'india', r'mumbai', r'\.in\b', r'भारत', r'India', r'印度', r'孟買'],
-    'canada': [r'canada', r'toronto', r'\.ca\b', r'Canada', r'加拿大', r'多倫多'],
-    'australia': [r'australia', r'sydney', r'\.au\b', r'Australia', r'澳洲', r'悉尼'],
-    'china': [r'china', r'beijing', r'\.cn\b', r'中国', r'China', r'北京'],
-    'italy': [r'italy', r'rome', r'\.it\b', r'Italia', r'意大利', r'羅馬'],
-    'spain': [r'spain', r'madrid', r'\.es\b', r'España', r'Espagne', r'西班牙', r'马德里'],
-    'portugal': [r'portugal', r'lisbon', r'\.pt\b', r'Portugal', r'葡萄牙', r'里斯本'],
-    'norway': [r'norway', r'oslo', r'\.no\b', r'Norge', r'Norway', r'挪威', r'奥斯陆'],
-    'finland': [r'finland', r'helsinki', r'\.fi\b', r'Suomi', r'Finland', r'芬兰', r'赫尔辛基'],
-    'denmark': [r'denmark', r'copenhagen', r'\.dk\b', r'Danmark', r'Denmark', r'丹麦', r'哥本哈根'],
-    'poland': [r'poland', r'warsaw', r'\.pl\b', r'Polska', r'Poland', r'波兰', r'华沙'],
-    'ukraine': [r'ukraine', r'kyiv', r'\.ua\b', r'Україна', r'Ukraine', r'乌克兰', r'基辅'],
-    'belarus': [r'belarus', r'minsk', r'\.by\b', r'Беларусь', r'Belarus', r'白俄罗斯', r'明斯克'],
-    'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'Indonesia', r'印度尼西亚', r'雅加达'],
-    'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'Malaysia', r'马来西亚', r'吉隆坡'],
-    'philippines': [r'philippines', r'manila', r'\.ph\b', r'Philippines', r'菲律宾', r'马尼拉'],
-    'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'Việt Nam', r'Vietnam', r'越南', r'河内'],
-    'thailand': [r'thailand', r'bangkok', r'\.th\b', r'Thailand', r'ไทย', r'泰国', r'曼谷'],
-    'czech republic': [r'czech', r'prague', r'\.cz\b', r'Česko', r'Czech', r'捷克', r'布拉格'],
-    'romania': [r'romania', r'bucharest', r'\.ro\b', r'România', r'Romania', r'罗马尼亚', r'布加勒斯特'],
-    'hungary': [r'hungary', r'budapest', r'\.hu\b', r'Magyarország', r'Hungary', r'匈牙利', r'布达佩斯'],
-    'greece': [r'greece', r'athens', r'\.gr\b', r'Ελλάδα', r'Greece', r'希腊', r'雅典'],
-    'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'България', r'Bulgaria', r'保加利亚', r'索非亚'],
-    'egypt': [r'egypt', r'cairo', r'\.eg\b', r'مصر', r'Egypt', r'埃及', r'开罗'],
-    'nigeria': [r'nigeria', r'abuja', r'\.ng\b', r'Nigeria', r'尼日利亚', r'阿布贾'],
-    'kenya': [r'kenya', r'nairobi', r'\.ke\b', r'Kenya', r'肯尼亚', r'内罗毕'],
-    'colombia': [r'colombia', r'bogota', r'\.co\b', r'Colombia', r'哥伦比亚', r'波哥大'],
-    'peru': [r'peru', r'lima', r'\.pe\b', r'Perú', r'Peru', r'秘鲁', r'利马'],
-    'chile': [r'chile', r'santiago', r'\.cl\b', r'Chile', r'智利', r'圣地亚哥'],
-    'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'Venezuela', r'委内瑞拉', r'加拉加斯'],
-    'austria': [r'austria', r'vienna', r'\.at\b', r'Österreich', r'Austria', r'奥地利', r'维也纳'],
-    'belgium': [r'belgium', r'brussels', r'\.be\b', r'België', r'Belgium', r'比利时', r'布鲁塞尔'],
-    'ireland': [r'ireland', r'dublin', r'\.ie\b', r'Éire', r'Ireland', r'爱尔兰', r'都柏林'],
-    'algeria': [r'algeria', r'algiers', r'\.dz\b', r'الجزائر', r'Algeria', r'阿尔及利亚'],
-    'angola': [r'angola', r'luanda', r'\.ao\b', r'Angola', r'安哥拉'],
-    'bangladesh': [r'bangladesh', r'dhaka', r'\.bd\b', r'Bangladesh', r'孟加拉'],
-    'cambodia': [r'cambodia', r'phnom penh', r'\.kh\b', r'Cambodge', r'Cambodia', r'柬埔寨'],
-    'costa rica': [r'costa rica', r'san jose', r'\.cr\b', r'Costa Rica', r'哥斯达黎加'],
-    'croatia': [r'croatia', r'zagreb', r'\.hr\b', r'Hrvatska', r'Croatia', r'克罗地亚'],
-    'cuba': [r'cuba', r'havana', r'\.cu\b', r'Cuba', r'古巴'],
-    'estonia': [r'estonia', r'tallinn', r'\.ee\b', r'Eesti', r'Estland', r'эстония', r'爱沙尼亚'],  # Эстония - часть Прибалтики [[2]]
-    'georgia': [r'georgia', r'tbilisi', r'\.ge\b', r'Sakartvelo', r'Georgia', r'格鲁吉亚'],
-    'ghana': [r'ghana', r'accra', r'\.gh\b', r'Ghana', r'加纳'],
-    'iran': [r'iran', r'tehran', r'\.ir\b', r'Iran', r'ایران', r'伊朗'],
-    'jordan': [r'jordan', r'amman', r'\.jo\b', r'Urdun', r'Jordan', r'约旦'],
-    'kazakhstan': [r'kazakhstan', r'astana', r'almaty', r'\.kz\b', r'Kazakhstan', r'哈萨克斯坦'],
-    'kuwait': [r'kuwait', r'kuwait city', r'\.kw\b', r'Al Kuwayt', r'Kuwait', r'科威特'],
-    'lebanon': [r'lebanon', r'beirut', r'\.lb\b', r'Lubnān', r'Lebanon', r'黎巴嫩'],
-    'libya': [r'libya', r'tripoli', r'\.ly\b', r'Libiya', r'Libya', r'利比亚'],
-    'morocco': [r'morocco', r'rabat', r'\.ma\b', r'Maghrib', r'Morocco', r'摩洛哥'],
-    'nepal': [r'nepal', r'kathmandu', r'\.np\b', r'Nepal', r'尼泊尔'],
-    'oman': [r'oman', r'muscat', r'\.om\b', r'Oman', r'阿曼'],
-    'pakistan': [r'pakistan', r'islamabad', r'\.pk\b', r'Pakistan', r'巴基斯坦'],
-    'qatar': [r'qatar', r'doha', r'\.qa\b', r'Qatar', r'卡塔尔'],
-    'serbia': [r'serbia', r'belgrade', r'\.rs\b', r'Srbija', r'Serbia', r'塞尔вия'],
-    'slovakia': [r'slovakia', r'bratislava', r'\.sk\b', r'Slovensko', r'Slovakia', r'斯洛伐克'],
-    'slovenia': [r'slovenia', r'ljubljana', r'\.si\b', r'Slovenija', r'Slovenia', r'斯洛文尼亚'],
-    'sudan': [r'sudan', r'khartoum', r'\.sd\b', r'Sudan', r'苏丹'],
-    'syria': [r'syria', r'damascus', r'\.sy\b', r'Suriyah', r'Syria', r'叙利亚'],
-    'tunisia': [r'tunisia', r'tunis', r'\.tn\b', r'Tunis', r'Tunisia', r'突尼斯'],
-    'uruguay': [r'uruguay', r'montevideo', r'\.uy\b', r'Uruguay', r'乌拉圭'],
-    'uzbekistan': [r'uzbekistan', r'tashkent', r'\.uz\b', r'Oʻzbekiston', r'Uzbekistan', r'乌兹бекистан'],
-    'yemen': [r'yemen', r'sanaa', r'\.ye\b', r'Yaman', r'Yemen', r'也门'],
-    'latvia': [  # Латвия - часть Прибалтики [[2]]
+    'india': [r'india', r'mumbai', r'\.in\b', r'भारत', r'India', r'India', r'印度', r'孟買'],
+    'canada': [r'canada', r'toronto', r'\.ca\b', r'Canada', r'Canada', r'加拿大', r'多倫多'],
+    'australia': [r'australia', r'sydney', r'\.au\b', r'Australia', r'Australia', r'澳洲', r'悉尼'],
+    'china': [r'china', r'beijing', r'\.cn\b', r'中国', r'China', r'China', r'北京'],
+    'italy': [r'italy', r'rome', r'\.it\b', r'Italia', r'Italy', r'意大利', r'羅馬'],
+    'spain': [r'spain', r'madrid', r'\.es\b', r'España', r'Espagne', r'Spain', r'西班牙', r'马德里'],
+    'portugal': [r'portugal', r'lisbon', r'\.pt\b', r'Portugal', r'Portugal', r'葡萄牙', r'里斯本'],
+    'norway': [r'norway', r'oslo', r'\.no\b', r'Norge', r'Norway', r'Norway', r'挪威', r'奥斯陆'],
+    'finland': [r'finland', r'helsinki', r'\.fi\b', r'Suomi', r'Finland', r'Finland', r'芬兰', r'赫尔辛基'],
+    'denmark': [r'denmark', r'copenhagen', r'\.dk\b', r'Danmark', r'Denmark', r'Denmark', r'丹麦', r'哥本哈根'],
+    'poland': [r'poland', r'warsaw', r'\.pl\b', r'Polska', r'Poland', r'Poland', r'波兰', r'华沙'],
+    'ukraine': [r'ukraine', r'kyiv', r'\.ua\b', r'Україна', r'Ukraine', r'Ukraine', r'乌克兰', r'基辅'],
+    'belarus': [r'belarus', r'minsk', r'\.by\b', r'Беларусь', r'Belarus', r'Belarus', r'白俄罗斯', r'明Ск'],
+    'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'Indonesia', r'Indonesia', r'印度尼西亚', r'雅加达'],
+    'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'Malaysia', r'Malaysia', r'马来西亚', r'吉隆坡'],
+    'philippines': [r'philippines', r'manila', r'\.ph\b', r'Philippines', r'Philippines', r'菲律宾', r'马尼ла'],
+    'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'Việt Nam', r'Vietnam', r'Vietnam', r'越南', r'河内'],
+    'thailand': [r'thailand', r'bangkok', r'\.th\b', r'Thailand', r'Thailand', r'ไทย', r'泰国', r'曼谷'],
+    'czech republic': [r'czech', r'prague', r'\.cz\b', r'Česko', r'Czech', r'Czech', r'捷克', r'布拉格'],
+    'romania': [r'romania', r'bucharest', r'\.ro\b', r'România', r'Romania', r'Romania', r'罗马尼亚', r'布加勒斯特'],
+    'hungary': [r'hungary', r'budapest', r'\.hu\b', r'Magyarország', r'Hungary', r'Hungary', r'匈牙利', r'布达佩斯'],
+    'greece': [r'greece', r'athens', r'\.gr\b', r'Ελλάδα', r'Greece', r'Greece', r'希腊', r'雅典'],
+    'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'България', r'Bulgaria', r'Bulgaria', r'保加利亚', r'索非亚'],
+    'egypt': [r'egypt', r'cairo', r'\.eg\b', r'مصر', r'Egypt', r'Egypt', r'埃及', r'开罗'],
+    'nigeria': [r'nigeria', r'abuja', r'\.ng\b', r'Nigeria', r'Nigeria', r'尼日利亚', r'阿布贾'],
+    'kenya': [r'kenya', r'nairobi', r'\.ke\b', r'Kenya', r'Kenya', r'肯尼亚', r'内罗毕'],
+    'colombia': [r'colombia', r'bogota', r'\.co\b', r'Colombia', r'Colombia', r'哥伦比亚', r'波哥大'],
+    'peru': [r'peru', r'lima', r'\.pe\b', r'Perú', r'Peru', r'Peru', r'秘鲁', r'利马'],
+    'chile': [r'chile', r'santiago', r'\.cl\b', r'Chile', r'Chile', r'智利', r'圣地亚哥'],
+    'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'Venezuela', r'Venezuela', r'委内瑞拉', r'加拉加斯'],
+    'austria': [r'austria', r'vienna', r'\.at\b', r'Österreich', r'Austria', r'Austria', r'奥地利', r'维也纳'],
+    'belgium': [r'belgium', r'brussels', r'\.be\b', r'België', r'Belgium', r'Belgium', r'比利时', r'布鲁塞尔'],
+    'ireland': [r'ireland', r'dublin', r'\.ie\b', r'Éire', r'Ireland', r'Ireland', r'爱尔兰', r'都柏林'],
+    'algeria': [r'algeria', r'algiers', r'\.dz\b', r'الجزائر', r'Algeria', r'Algeria', r'阿尔及利亚'],
+    'angola': [r'angola', r'luanda', r'\.ao\b', r'Angola', r'Angola', r'安哥拉'],
+    'bangladesh': [r'bangladesh', r'dhaka', r'\.bd\b', r'Bangladesh', r'Bangladesh', r'孟加拉'],
+    'cambodia': [r'cambodia', r'phnom penh', r'\.kh\b', r'Cambodge', r'Cambodia', r'Cambodia', r'柬埔寨'],
+    'costa rica': [r'costa rica', r'san jose', r'\.cr\b', r'Costa Rica', r'Costa Rica', r'哥斯达黎加'],
+    'croatia': [r'croatia', r'zagreb', r'\.hr\b', r'Hrvatska', r'Croatia', r'Croatia', r'克罗地亚'],
+    'cuba': [r'cuba', r'havana', r'\.cu\b', r'Cuba', r'Cuba', r'古巴'],
+    'estonia': [r'estonia', r'tallinn', r'\.ee\b', r'Eesti', r'Estland', r'эстония', r'爱沙尼亚'],  # Эстония - часть Прибалтики
+    'georgia': [r'georgia', r'tbilisi', r'\.ge\b', r'Sakartvelo', r'Georgia', r'Georgia', r'格鲁吉亚'],
+    'ghana': [r'ghana', r'accra', r'\.gh\b', r'Ghana', r'Ghana', r'加纳'],
+    'iran': [r'iran', r'tehran', r'\.ir\b', r'Iran', r'ایران', r'Iran', r'伊朗'],
+    'jordan': [r'jordan', r'amman', r'\.jo\b', r'Urdun', r'Jordan', r'Jordan', r'约旦'],
+    'kazakhstan': [r'kazakhstan', r'astana', r'almaty', r'\.kz\b', r'Kazakhstan', r'Kazakhstan', r'哈萨克斯坦'],
+    'kuwait': [r'kuwait', r'kuwait city', r'\.kw\b', r'Al Kuwayt', r'Kuwait', r'Kuwait', r'科威特'],
+    'lebanon': [r'lebanon', r'beirut', r'\.lb\b', r'Lubnān', r'Lebanon', r'Lebanon', r'黎巴嫩'],
+    'libya': [r'libya', r'tripoli', r'\.ly\b', r'Libiya', r'Libya', r'Libya', r'利比亚'],
+    'morocco': [r'morocco', r'rabat', r'\.ma\b', r'Maghrib', r'Morocco', r'Morocco', r'摩洛哥'],
+    'nepal': [r'nepal', r'kathmandu', r'\.np\b', r'Nepal', r'Nepal', r'尼泊尔'],
+    'oman': [r'oman', r'muscat', r'\.om\b', r'Oman', r'Oman', r'阿曼'],
+    'pakistan': [r'pakistan', r'islamabad', r'\.pk\b', r'Pakistan', r'Pakistan', r'巴基斯坦'],
+    'qatar': [r'qatar', r'doha', r'\.qa\b', r'Qatar', r'Qatar', r'卡塔尔'],
+    'serbia': [r'serbia', r'belgrade', r'\.rs\b', r'Srbija', r'Serbia', r'Serbia', r'塞尔вия'],
+    'slovakia': [r'slovakia', r'bratislava', r'\.sk\b', r'Slovensko', r'Slovakia', r'Slovakia', r'斯洛伐克'],
+    'slovenia': [r'slovenia', r'ljubljana', r'\.si\b', r'Slovenija', r'Slovenia', r'Slovenia', r'斯洛文尼亚'],
+    'sudan': [r'sudan', r'khartoum', r'\.sd\b', r'Sudan', r'Sudan', r'苏丹'],
+    'syria': [r'syria', r'damascus', r'\.sy\b', r'Suriyah', r'Syria', r'Syria', r'叙利亚'],
+    'tunisia': [r'tunisia', r'tunis', r'\.tn\b', r'Tunis', r'Tunisia', r'Tunisia', r'突尼斯'],
+    'uruguay': [r'uruguay', r'montevideo', r'\.uy\b', r'Uruguay', r'Uruguay', r'乌拉圭'],
+    'uzbekistan': [r'uzbekistan', r'tashkent', r'\.uz\b', r'Oʻzbekiston', r'Uzbekistan', r'Uzbekistan', r'乌兹бекистан'],
+    'yemen': [r'yemen', r'sanaa', r'\.ye\b', r'Yaman', r'Yemen', r'Yemen', r'也门'],
+    'latvia': [  # Латвия - часть Прибалтики
         r'latvia', 
         r'rīga', 
         r'\.lv\b', 
@@ -263,7 +270,7 @@ COUNTRY_PATTERNS = {
         r'рига', 
         r'рига'
     ],
-    'lithuania': [  # Литва - часть Прибалтики [[2]]
+    'lithuania': [  # Литва - часть Прибалтики
         r'lithuania', 
         r'vilnius', 
         r'\.lt\b', 
@@ -337,7 +344,7 @@ COUNTRY_INSTRUCTIONS = {
     "costa rica": "Инструкция по настройке для Коста-Рики: Для доступа к коста-риканскому контенту. Используйте конфиги с пометкой San Jose.",
     "croatia": "Инструкция по настройке для Хорватии: Для доступа к хорватскому контенту. Используйте конфиги с пометкой Zagreb.",
     "cuba": "Инструкция по настройке для Кубы: Для доступа к кубинскому контенту. Используйте конфиги с пометкой Havana.",
-    "estonia": "Инструкция по настройке для Эстонии: Для доступа к эстонскому контенту. Используйте конфиги с пометкой Tallinn. [[3]]",  # Эстония - часть Прибалтики
+    "estonia": "Инструкция по настройке для Эстонии: Для доступа к эстонскому контенту. Используйте конфиги с пометкой Tallinn.",  # Эстония - часть Прибалтики
     "georgia": "Инструкция по настройке для Грузии: Для доступа к грузинскому контенту. Используйте конфиги с пометкой Tbilisi.",
     "ghana": "Инструкция по настройке для Ганы: Для доступа к ганскому контенту. Используйте конфиги с пометкой Accra.",
     "iran": "Инструкция по настройке для Ирана: Для доступа к иранскому контенту. Используйте конфиги с пометкой Tehran.",
@@ -360,8 +367,8 @@ COUNTRY_INSTRUCTIONS = {
     "uruguay": "Инструкция по настройке для Уругвая: Для доступа к уругвайскому контенту. Используйте конфиги с пометкой Montevideo.",
     "uzbekistan": "Инструкция по настройке для Узбекистана: Для доступа к узбекскому контенту. Используйте конфиги с пометкой Tashkent.",
     "yemen": "Инструкция по настройке для Йемена: Для доступа к йеменскому контенту. Используйте конфиги с пометкой Sanaa.",
-    "latvia": "Инструкция по настройке для Латвии: Для доступа к латвийскому контенту. Используйте конфиги с пометкой Rīga. [[7]]",  # Латвия - часть Прибалтики
-    "lithuania": "Инструкция по настройке для Литвы: Для доступа к литовскому контенту. Используйте конфиги с пометкой Vilnius. [[9]]"  # Литва - часть Прибалтики
+    "latvia": "Инструкция по настройке для Латвии: Для доступа к латвийскому контенту. Используйте конфиги с пометкой Rīga.",  # Латвия - часть Прибалтики
+    "lithuania": "Инструкция по настройке для Литвы: Для доступа к литовскому контенту. Используйте конфиги с пометкой Vilnius."  # Литва - часть Прибалтики
 }
 
 # Дополнительные данные о странах
@@ -381,13 +388,13 @@ COUNTRY_DETAILS = {
         "official_name": "Латвийская Республика",
         "capital": "Рига",
         "continent": "Европа",
-        "flag_description": "Трехцветный флаг с красным вверху, узкой белой полосой в середине и черным внизу. [[3]]"
+        "flag_description": "Трехцветный флаг с красным вверху, узкой белой полосой в середине и черным внизу."
     },
     "lithuania": {
         "official_name": "Литовская Республика",
         "capital": "Вильнюс",
         "continent": "Европа",
-        "flag_description": "Три горизонтальные полосы: желтая (верхняя), зеленая (средняя) и красная (нижняя). [[9]]"
+        "flag_description": "Три горизонтальные полосы: желтая (верхняя), зеленая (средняя) и красная (нижняя)."
     },
     "estonia": {
         "official_name": "Эстонская Республика",
@@ -412,3 +419,51 @@ def get_instruction_for_country(country: str) -> str:
 def get_country_code(country: str) -> list:
     """Получить код(ы) страны"""
     return COUNTRY_CODES.get(country.lower(), [])
+
+def normalize_country_name(country: str) -> str:
+    """
+    Нормализация названия страны для соответствия формату в данных.
+    
+    Эта функция приводит название страны к стандартному формату,
+    который используется в словарях COUNTRY_PATTERNS и других.
+    
+    Примеры:
+    - "United States of America" -> "united states"
+    - "Russian Federation" -> "russia"
+    - "UK" -> "united kingdom"
+    - "USA" -> "united states"
+    - "Latvia" -> "latvia"
+    - "Lithuania" -> "lithuania"
+    - "Estonia" -> "estonia"
+    """
+    if not country:
+        return ""
+    
+    # Приводим к нижнему регистру и удаляем лишние пробелы
+    country = country.lower().strip()
+    
+    # Специальные случаи и синонимы
+    if country in ["usa", "america", "united states of america", "us"]:
+        return "united states"
+    elif country in ["russian federation", "ru", "rus"]:
+        return "russia"
+    elif country in ["uk", "england", "great britain"]:
+        return "united kingdom"
+    elif country in ["south korea", "korea republic"]:
+        return "south korea"
+    elif country in ["czechia", "czech"]:
+        return "czech republic"
+    
+    # Проверяем соответствие известным странам
+    for standard_name in COUNTRY_PATTERNS.keys():
+        # Если название содержит стандартное имя, возвращаем его
+        if standard_name in country:
+            return standard_name
+    
+    # Проверяем соответствие через коды стран
+    for standard_name, codes in COUNTRY_CODES.items():
+        if any(code in country for code in codes):
+            return standard_name
+    
+    # Если ничего не подошло, возвращаем исходное название в нижнем регистре
+    return country
