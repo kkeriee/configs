@@ -195,8 +195,23 @@ def extract_host(config: str) -> str:
                     if '@' in decoded:
                         host = decoded.split('@')[1].split(':')[0]
                         return host
+                    else:
+                        # Формат: host:port
+                        parts = decoded.split(':')
+                        if len(parts) >= 2:
+                            return parts[0]
             except Exception as e:
                 logger.debug(f"Ошибка обработки Shadowsocks: {e}")
+        
+        # Wireguard
+        if config.startswith('wg://') or config.startswith('wireguard://'):
+            try:
+                # Извлечение хоста из URL
+                url = config.split('://')[1].split('?')[0]
+                host = url.split('@')[1].split(':')[0]
+                return host
+            except Exception as e:
+                logger.debug(f"Ошибка обработки Wireguard: {e}")
         
         # Общий случай
         patterns = [
@@ -211,7 +226,9 @@ def extract_host(config: str) -> str:
         for pattern in patterns:
             match = re.search(pattern, config, re.IGNORECASE)
             if match:
-                return match.group(1) if match.groups() else match.group(0)
+                if match.lastindex:
+                    return match.group(1)
+                return match.group(0)
     except Exception as e:
         logger.debug(f"Ошибка извлечения хоста: {e}")
     return None
@@ -547,6 +564,7 @@ async def strict_search(update: Update, context: CallbackContext):
         
         # Проверяем геолокацию IP
         host_country_map = {}
+        total_processed = 0
         for host, ip in host_ip_map.items():
             if not ip:
                 continue
@@ -567,8 +585,8 @@ async def strict_search(update: Update, context: CallbackContext):
             except Exception as e:
                 logger.error(f"Ошибка при обработке геолокации: {e}")
             
+            total_processed += 1
             # Обновление прогресса
-            total_processed = len(host_country_map)
             if time.time() - context.user_data.get('progress_last_update', 0) > PROGRESS_UPDATE_INTERVAL:
                 progress = min(total_processed / total_hosts * 100, 100)
                 progress_bar = create_progress_bar(progress)
@@ -969,7 +987,14 @@ def main() -> None:
     health_thread.start()
     logger.info(f"HTTP-сервер для проверки работоспособности запущен на порту {PORT}")
     
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    # Создаем приложение с обработкой конфликтов
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .concurrent_updates(False)  # Отключаем параллельные обновления
+        .build()
+    )
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("check_configs", start_check)],
@@ -999,9 +1024,12 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("start", start_check))
     
-    # Запуск бота
+    # Запуск бота с обработкой конфликтов
     logger.info("Запуск бота...")
-    application.run_polling()
+    application.run_polling(
+        drop_pending_updates=True,  # Игнорировать ожидающие обновления
+        allowed_updates=Update.ALL_TYPES  # Разрешить все типы обновлений
+    )
 
 if __name__ == '__main__':
     main()
