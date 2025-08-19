@@ -92,11 +92,9 @@ geo_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 dns_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 config_cache = LimitedCache(max_size=CACHE_MAX_SIZE, ttl=CACHE_TTL)
 instruction_cache = LimitedCache(max_size=100, ttl=CACHE_TTL * 2)  # Инструкции живут дольше
-
 # Инициализация базы геолокации
 geoip_reader = None
 geoip_file_path = None
-
 def check_rate_limit(user_id: int) -> bool:
     """Проверка ограничения запросов"""
     now = time.time()
@@ -111,7 +109,6 @@ def check_rate_limit(user_id: int) -> bool:
         user_request_times[user_id] = []
     user_request_times[user_id].append(now)
     return True
-
 def initialize_geoip_database_sync():
     """Синхронная инициализация базы геолокации с использованием временного файла"""
     global geoip_reader, geoip_file_path
@@ -162,12 +159,10 @@ def initialize_geoip_database_sync():
     except Exception as e:
         logger.critical(f"Критическая ошибка инициализации базы: {e}")
         return False
-
 async def initialize_geoip_database():
     """Асинхронная обертка для инициализации базы геолокации"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, initialize_geoip_database_sync)
-
 def clear_temporary_data(context: CallbackContext):
     """Очистка временных данных в user_data"""
     keys_to_clear = [
@@ -179,11 +174,9 @@ def clear_temporary_data(context: CallbackContext):
     for key in keys_to_clear:
         if key in context.user_data:
             del context.user_data[key]
-
 def normalize_text(text: str) -> str:
     """Нормализация текста только по флагам стран"""
     text = text.strip()
-    
     # Словарь соответствия флагов странам
     flag_country_map = {
         "🇷🇺": "russia",
@@ -270,18 +263,14 @@ def normalize_text(text: str) -> str:
         "🇺🇿": "uzbekistan",
         "🇾🇪": "yemen"
     }
-    
     # Проверка, что текст является флагом
     if text in flag_country_map:
         return flag_country_map[text]
-    
     # Если текст не является флагом, возвращаем None
     return None
-
 async def generate_country_instructions(country: str) -> str:
     """Генерация инструкций для страны (оставлена для совместимости)"""
     return f"Инструкция для {country}"
-
 async def start_check(update: Update, context: CallbackContext):
     """Начало проверки конфигов с выбором действия"""
     # Проверка ограничения запросов
@@ -306,7 +295,6 @@ async def start_check(update: Update, context: CallbackContext):
     else:
         await update.message.reply_text("📎 Пожалуйста, загрузите текстовый файл с конфигурациями VPN (до 15 МБ).")
         return WAITING_FILE
-
 async def handle_document(update: Update, context: CallbackContext):
     """Обработка загруженного файла с потоковой обработкой"""
     user = update.message.from_user
@@ -360,9 +348,11 @@ async def handle_document(update: Update, context: CallbackContext):
         if len(configs) == 0:
             await update.message.reply_text("❌ Не найдено ни одной конфигурации в файле.")
             return ConversationHandler.END
+        # Добавляем новую кнопку "Поиск по флагу"
         keyboard = [
             [InlineKeyboardButton("📤 Загрузить еще файл", callback_data='add_file')],
-            [InlineKeyboardButton("🌍 Указать страну", callback_data='set_country')]
+            [InlineKeyboardButton("🌍 Указать страну", callback_data='set_country')],
+            [InlineKeyboardButton("🔍 Поиск по флагу", callback_data='search_by_flag')]  # Новая кнопка
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
@@ -374,6 +364,32 @@ async def handle_document(update: Update, context: CallbackContext):
         logger.error(f"Ошибка обработки файла: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обработке файла. Попробуйте снова.")
         return ConversationHandler.END
+
+async def handle_flag_search(update: Update, context: CallbackContext):
+    """Поиск конфигураций по флагу эмодзи"""
+    flag_emoji = update.message.text
+    configs = context.user_data.get('configs', [])
+    if not configs:
+        await update.message.reply_text("❌ Ошибка: данные для поиска отсутствуют.")
+        return ConversationHandler.END
+    
+    # Фильтрация конфигураций, содержащих флаг эмодзи
+    matched_configs = [config for config in configs if flag_emoji in config]
+    
+    if not matched_configs:
+        await update.message.reply_text(f"❌ Конфигурации, содержащие {flag_emoji}, не найдены.")
+        return ConversationHandler.END
+    
+    context.user_data['matched_configs'] = matched_configs
+    context.user_data['country'] = f"конфиги с флагом {flag_emoji}"
+    
+    await update.message.reply_text(
+        f"✅ Найдено {len(matched_configs)} конфигов с флагом {flag_emoji}!"
+    )
+    await update.message.reply_text(
+        f"🌍 Найдено {len(matched_configs)} конфигов с флагом {flag_emoji}. Сколько конфигов прислать? (введите число от 1 до {len(matched_configs)})"
+    )
+    return WAITING_NUMBER
 
 async def button_handler(update: Update, context: CallbackContext) -> int:
     """Обработчик inline кнопок с улучшенной обработкой"""
@@ -416,64 +432,66 @@ async def button_handler(update: Update, context: CallbackContext) -> int:
     elif query.data == 'cancel':
         await cancel(update, context)
         return ConversationHandler.END
+    elif query.data == 'search_by_flag':
+        # Устанавливаем режим поиска по флагу
+        context.user_data['search_mode'] = 'flag_search'
+        await query.edit_message_text("🚩 Пожалуйста, отправьте флаг эмодзи для поиска (например: 🇷🇺, 🇺🇸, 🇩🇪):")
+        return WAITING_COUNTRY
     return context.user_data.get('current_state', WAITING_COUNTRY)
-
 async def start_choice(update: Update, context: CallbackContext) -> int:
     return await button_handler(update, context)
-
 async def handle_country(update: Update, context: CallbackContext):
     """Обработка ввода флага страны"""
     country_request = update.message.text
     context.user_data['country_request'] = country_request
     
-    # Проверка, что введенный текст является флагом
-    normalized_text = normalize_text(country_request)
-    if not normalized_text:
-        await update.message.reply_text(
-            "❌ Некорректный запрос. Пожалуйста, отправьте флаг страны.\n"
-            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
-        )
-        return WAITING_COUNTRY
-    
-    # Поиск страны через pycountry
-    try:
-        countries = pycountry.countries.search_fuzzy(normalized_text)
-        country = countries[0]
-        logger.info(f"Pycountry определил страну: {country.name}")
-    except LookupError:
-        await update.message.reply_text(
-            "❌ Страна не распознана. Пожалуйста, отправьте флаг страны.\n"
-            "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
-        )
-        return WAITING_COUNTRY
-    
-    # Сохраняем данные о стране
-    context.user_data['country'] = country.name
-    context.user_data['target_country'] = country.name.lower()
-    context.user_data['country_codes'] = [c.alpha_2.lower() for c in countries] + [country.alpha_2.lower()]
-    
-    # Клавиатура выбора режима
-    keyboard = [
-        [
-            InlineKeyboardButton("⚡ Быстрый поиск", callback_data='fast_mode'),
-            InlineKeyboardButton("🔍 Строгий поиск", callback_data='strict_mode')
+    # Проверка, что мы в режиме поиска по флагу
+    if context.user_data.get('search_mode') == 'flag_search':
+        return await handle_flag_search(update, context)
+    else:
+        # Нормальная обработка выбора страны
+        # Проверка, что введенный текст является флагом
+        normalized_text = normalize_text(country_request)
+        if not normalized_text:
+            await update.message.reply_text(
+                "❌ Некорректный запрос. Пожалуйста, отправьте флаг страны.\n"
+                "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
+            )
+            return WAITING_COUNTRY
+        # Поиск страны через pycountry
+        try:
+            countries = pycountry.countries.search_fuzzy(normalized_text)
+            country = countries[0]
+            logger.info(f"Pycountry определил страну: {country.name}")
+        except LookupError:
+            await update.message.reply_text(
+                "❌ Страна не распознана. Пожалуйста, отправьте флаг страны.\n"
+                "Примеры: 🇷🇺, 🇺🇸, 🇩🇪"
+            )
+            return WAITING_COUNTRY
+        # Сохраняем данные о стране
+        context.user_data['country'] = country.name
+        context.user_data['target_country'] = country.name.lower()
+        context.user_data['country_codes'] = [c.alpha_2.lower() for c in countries] + [country.alpha_2.lower()]
+        # Клавиатура выбора режима
+        keyboard = [
+            [
+                InlineKeyboardButton("⚡ Быстрый поиск", callback_data='fast_mode'),
+                InlineKeyboardButton("🔍 Строгий поиск", callback_data='strict_mode')
+            ]
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Генерация инструкций
-    if country.name.lower() not in instruction_cache:
-        instructions = await generate_country_instructions(country.name)
-        instruction_cache[country.name.lower()] = instructions
-    
-    await update.message.reply_text(
-        f"🌍 Вы выбрали страну: {country.name}\n"
-        f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция загружается...')}\n"
-        "Выберите режим поиска:",
-        reply_markup=reply_markup
-    )
-    return WAITING_MODE
-
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Генерация инструкций
+        if country.name.lower() not in instruction_cache:
+            instructions = await generate_country_instructions(country.name)
+            instruction_cache[country.name.lower()] = instructions
+        await update.message.reply_text(
+            f"🌍 Вы выбрали страну: {country.name}\n"
+            f"ℹ️ {instruction_cache.get(country.name.lower(), 'Инструкция загружается...')}\n"
+            "Выберите режим поиска:",
+            reply_markup=reply_markup
+        )
+        return WAITING_MODE
 async def fast_search(update: Update, context: CallbackContext):
     """Быстрый поиск конфигов с улучшенной обработкой"""
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
@@ -543,7 +561,6 @@ async def fast_search(update: Update, context: CallbackContext):
             text="❌ Произошла ошибка при поиске конфигураций."
         )
         return ConversationHandler.END
-
 async def resolve_dns_async(host: str) -> str:
     """Асинхронное разрешение DNS с кэшированием и повторными попытками"""
     if host in dns_cache:
@@ -577,7 +594,6 @@ async def resolve_dns_async(host: str) -> str:
         logger.error(f"Ошибка разрешения DNS для {host}: {e}")
         dns_cache[host] = None
         return None
-
 async def geolocate_ip_async(ip: str) -> str:
     """Асинхронная геолокация IP с использованием локальной базы данных"""
     if not geoip_reader:
@@ -611,7 +627,6 @@ async def geolocate_ip_async(ip: str) -> str:
         logger.error(f"Общая ошибка геолокации для {ip}: {e}")
         geo_cache[ip] = None
         return None
-
 async def strict_search(update: Update, context: CallbackContext):
     """Строгий поиск конфигов с проверкой геолокации и улучшенной обработкой"""
     user_id = update.callback_query.from_user.id if update.callback_query else update.message.from_user.id
@@ -798,7 +813,6 @@ async def strict_search(update: Update, context: CallbackContext):
             text="❌ Произошла ошибка при строгом поиске конфигураций."
         )
         return ConversationHandler.END
-
 async def handle_number(update: Update, context: CallbackContext):
     """Обработка ввода количества конфигов с улучшенной проверкой"""
     user_input = update.message.text
@@ -827,7 +841,6 @@ async def handle_number(update: Update, context: CallbackContext):
         logger.error(f"Ошибка обработки количества конфигов: {e}")
         await update.message.reply_text("❌ Произошла ошибка при обработке запроса.")
         return ConversationHandler.END
-
 async def send_configs(update: Update, context: CallbackContext):
     """Отправка конфигов пользователю с улучшенной обработкой"""
     user_id = update.message.from_user.id
@@ -841,7 +854,7 @@ async def send_configs(update: Update, context: CallbackContext):
         await context.bot.send_message(chat_id=user_id, text="⏹ Отправка остановлена.")
         return ConversationHandler.END
     # Подготавливаем сообщения
-    header = f"Конфиги для {country_name}:\n\n"
+    header = f"Конфиги для {country_name}:\n"
     messages = []
     current_message = header
     for config in matched_configs:
@@ -870,7 +883,7 @@ async def send_configs(update: Update, context: CallbackContext):
         try:
             # Добавляем прогресс в последнее сообщение
             if i == total_messages - 1:
-                progress = f"\n\n⌛ Отправлено {i+1}/{total_messages} сообщений"
+                progress = f"\n⌛ Отправлено {i+1}/{total_messages} сообщений"
                 if len(message) + len(progress) <= MAX_MSG_LENGTH:
                     message += progress
             # Отправляем сообщение
@@ -896,13 +909,11 @@ async def send_configs(update: Update, context: CallbackContext):
     context.user_data['last_country'] = context.user_data['country']
     clear_temporary_data(context)
     return ConversationHandler.END
-
 def create_progress_bar(progress: float, length: int = 20) -> str:
     """Создает текстовый прогресс-бар с улучшенной отрисовкой"""
     filled = int(progress / 100 * length)
     empty = length - filled
     return '█' * filled + '░' * empty
-
 def is_config_relevant(config: str, target_country: str, country_codes: list) -> bool:
     """Проверка релевантности конфига с оптимизированным поиском"""
     # Проверяем по домену
@@ -911,13 +922,10 @@ def is_config_relevant(config: str, target_country: str, country_codes: list) ->
         tld = domain.split('.')[-1].lower()
         if tld in country_codes:
             return True
-    
     # Проверяем по ключевым словам
     if detect_by_keywords(config, target_country):
         return True
-    
     return False
-
 def detect_by_keywords(config: str, target_country: str) -> bool:
     """Обнаружение страны по ключевым словам"""
     # Стандартные паттерны
@@ -998,7 +1006,6 @@ def detect_by_keywords(config: str, target_country: str) -> bool:
         "uzbekistan": [r'uzbekistan', r'tashkent', r'\.uz\b', r'乌兹бекстан'],
         "yemen": [r'yemen', r'sanaa', r'\.ye\b', r'也门']
     }
-    
     # Быстрая проверка по ключевым словам
     if target_country in patterns:
         config_lower = config.lower()
@@ -1006,7 +1013,6 @@ def detect_by_keywords(config: str, target_country: str) -> bool:
             if re.search(pattern, config_lower):
                 return True
     return False
-
 def extract_host(config: str) -> str:
     """Извлечение хоста из конфига с улучшенными паттернами и безопасной обработкой"""
     try:
@@ -1104,7 +1110,6 @@ def extract_host(config: str) -> str:
     except Exception as e:
         logger.debug(f"Ошибка извлечения хоста: {e}")
     return None
-
 def extract_domain(config: str) -> str:
     """Извлечение домена из конфига с безопасной обработкой"""
     try:
@@ -1117,7 +1122,6 @@ def extract_domain(config: str) -> str:
     except Exception as e:
         logger.debug(f"Ошибка извлечения домена: {e}")
     return None
-
 async def cancel(update: Update, context: CallbackContext):
     """Отмена операции и очистка с улучшенной обработкой"""
     global geoip_file_path
@@ -1139,7 +1143,6 @@ async def cancel(update: Update, context: CallbackContext):
     instruction_cache.cleanup()
     await update.message.reply_text("Операция отменена.")
     return ConversationHandler.END
-
 async def post_init(application: Application):
     """Инициализация после запуска приложения с улучшенной обработкой ошибок"""
     try:
@@ -1150,7 +1153,6 @@ async def post_init(application: Application):
             logger.info("База геолокации успешно загружена")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы геолокации: {e}", exc_info=True)
-
 def main() -> None:
     """Основная функция запуска бота с улучшенной обработкой"""
     application = Application.builder().token(TOKEN).post_init(post_init).build()
@@ -1203,6 +1205,5 @@ def main() -> None:
     else:
         logger.info("Запуск в режиме polling")
         application.run_polling()
-
 if __name__ == "__main__":
     main()
