@@ -1,0 +1,10 @@
+python-telegram-bot
+pycountry
+requests
+cachetools
+openai
+python-telegram-bot[webhooks]
+PyYAML
+maxminddb
+aiohttp
+dnspython

@@ -1,0 +1,469 @@
+"""
+country_data.py
+
+Этот файл содержит данные о странах, используемые в боте для поиска конфигураций.
+Данные вынесены из основного кода для удобства поддержки и обновления.
+"""
+
+# Соответствие флагов и названий стран
+FLAG_COUNTRY_MAP = {
+    "🇷🇺": "russia",
+    "🇺🇸": "united states",
+    "🇩🇪": "germany",
+    "🇯🇵": "japan",
+    "🇫🇷": "france",
+    "🇬🇧": "united kingdom",
+    "🇸🇬": "singapore",
+    "🇳🇱": "netherlands",
+    "🇨🇦": "canada",
+    "🇨🇭": "switzerland",
+    "🇸🇪": "sweden",
+    "🇦🇺": "australia",
+    "🇧🇷": "brazil",
+    "🇮🇳": "india",
+    "🇰🇷": "south korea",
+    "🇹🇷": "turkey",
+    "🇹🇼": "taiwan",
+    "🇿🇦": "south africa",
+    "🇦🇪": "united arab emirates",
+    "🇸🇦": "saudi arabia",
+    "🇮🇱": "israel",
+    "🇲🇽": "mexico",
+    "🇦🇷": "argentina",
+    "🇮🇹": "italy",
+    "🇪🇸": "spain",
+    "🇵🇹": "portugal",
+    "🇳🇴": "norway",
+    "🇫🇮": "finland",
+    "🇩🇰": "denmark",
+    "🇵🇱": "poland",
+    "🇺🇦": "ukraine",
+    "🇧🇾": "belarus",
+    "🇨🇳": "china",
+    "🇮🇩": "indonesia",
+    "🇲🇾": "malaysia",
+    "🇵🇭": "philippines",
+    "🇻🇳": "vietnam",
+    "🇹🇭": "thailand",
+    "🇨🇿": "czech republic",
+    "🇷🇴": "romania",
+    "🇭🇺": "hungary",
+    "🇬🇷": "greece",
+    "🇧🇬": "bulgaria",
+    "🇪🇬": "egypt",
+    "🇳🇬": "nigeria",
+    "🇰🇪": "kenya",
+    "🇨🇴": "colombia",
+    "🇵🇪": "peru",
+    "🇨🇱": "chile",
+    "🇻🇪": "venezuela",
+    "🇦🇹": "austria",
+    "🇧🇪": "belgium",
+    "🇮🇪": "ireland",
+    "🇩🇿": "algeria",
+    "🇦🇴": "angola",
+    "🇧🇩": "bangladesh",
+    "🇰🇭": "cambodia",
+    "🇨🇷": "costa rica",
+    "🇭🇷": "croatia",
+    "🇨🇺": "cuba",
+    "🇪🇪": "estonia",  # Эстония - одна из стран Прибалтики
+    "🇬🇪": "georgia",
+    "🇬🇭": "ghana",
+    "🇮🇷": "iran",
+    "🇯🇴": "jordan",
+    "🇰🇿": "kazakhstan",
+    "🇰🇼": "kuwait",
+    "🇱🇧": "lebanon",
+    "🇱🇾": "libya",
+    "🇲🇦": "morocco",
+    "🇳🇵": "nepal",
+    "🇴🇲": "oman",
+    "🇵🇰": "pakistan",
+    "🇶🇦": "qatar",
+    "🇷🇸": "serbia",
+    "🇸🇰": "slovakia",
+    "🇸🇮": "slovenia",
+    "🇸🇩": "sudan",
+    "🇸🇾": "syria",
+    "🇹🇳": "tunisia",
+    "🇺🇾": "uruguay",
+    "🇺🇿": "uzbekistan",
+    "🇾🇪": "yemen",
+    "🇱🇻": "latvia",   # Латвия - одна из стран Прибалтики
+    "🇱🇹": "lithuania" # Литва - одна из стран Прибалтики
+}
+
+# Коды стран (ISO Alpha-2)
+COUNTRY_CODES = {
+    "russia": ["ru"],
+    "united states": ["us", "usa"],
+    "germany": ["de"],
+    "japan": ["jp"],
+    "france": ["fr"],
+    "united kingdom": ["gb", "uk", "uk"],
+    "singapore": ["sg"],
+    "netherlands": ["nl"],
+    "canada": ["ca"],
+    "switzerland": ["ch"],
+    "sweden": ["se"],
+    "australia": ["au"],
+    "brazil": ["br"],
+    "india": ["in"],
+    "south korea": ["kr"],
+    "turkey": ["tr"],
+    "taiwan": ["tw"],
+    "south africa": ["za"],
+    "united arab emirates": ["ae"],
+    "saudi arabia": ["sa"],
+    "israel": ["il"],
+    "mexico": ["mx"],
+    "argentina": ["ar"],
+    "italy": ["it"],
+    "spain": ["es"],
+    "portugal": ["pt"],
+    "norway": ["no"],
+    "finland": ["fi"],
+    "denmark": ["dk"],
+    "poland": ["pl"],
+    "ukraine": ["ua"],
+    "belarus": ["by"],
+    "china": ["cn"],
+    "indonesia": ["id"],
+    "malaysia": ["my"],
+    "philippines": ["ph"],
+    "vietnam": ["vn"],
+    "thailand": ["th"],
+    "czech republic": ["cz"],
+    "romania": ["ro"],
+    "hungary": ["hu"],
+    "greece": ["gr"],
+    "bulgaria": ["bg"],
+    "egypt": ["eg"],
+    "nigeria": ["ng"],
+    "kenya": ["ke"],
+    "colombia": ["co"],
+    "peru": ["pe"],
+    "chile": ["cl"],
+    "venezuela": ["ve"],
+    "austria": ["at"],
+    "belgium": ["be"],
+    "ireland": ["ie"],
+    "algeria": ["dz"],
+    "angola": ["ao"],
+    "bangladesh": ["bd"],
+    "cambodia": ["kh"],
+    "costa rica": ["cr"],
+    "croatia": ["hr"],
+    "cuba": ["cu"],
+    "estonia": ["ee"],  # Код Эстонии для Прибалтики
+    "georgia": ["ge"],
+    "ghana": ["gh"],
+    "iran": ["ir"],
+    "jordan": ["jo"],
+    "kazakhstan": ["kz"],
+    "kuwait": ["kw"],
+    "lebanon": ["lb"],
+    "libya": ["ly"],
+    "morocco": ["ma"],
+    "nepal": ["np"],
+    "oman": ["om"],
+    "pakistan": ["pk"],
+    "qatar": ["qa"],
+    "serbia": ["rs"],
+    "slovakia": ["sk"],
+    "slovenia": ["si"],
+    "sudan": ["sd"],
+    "syria": ["sy"],
+    "tunisia": ["tn"],
+    "uruguay": ["uy"],
+    "uzbekistan": ["uz"],
+    "yemen": ["ye"],
+    "latvia": ["lv"],   # Код Латвии для Прибалтики
+    "lithuania": ["lt"] # Код Литвы для Прибалтики
+}
+
+# Паттерны для определения стран в конфигурациях
+COUNTRY_PATTERNS = {
+    'japan': [r'jp\b', r'japan', r'tokyo', r'\.jp\b', r'日本', r'東京'],
+    'united states': [r'us\b', r'usa\b', r'united states', r'new york', r'\.us\b', r'美国', r'纽 YORK'],
+    'russia': [r'ru\b', r'russia', r'moscow', r'\.ru\b', r'россия', r'россія', r'俄国', r'москва'],
+    'germany': [r'de\b', r'germany', r'frankfurt', r'\.de\b', r'германия', r'德国', r'フランクフルト'],
+    'united kingdom': [r'uk\b', r'united kingdom', r'london', r'\.uk\b', r'英国', r'倫敦', r'gb'],
+    'france': [r'france', r'paris', r'\.fr\b', r'France', r'法国', r'巴黎'],
+    'brazil': [r'brazil', r'sao paulo', r'\.br\b', r'Brasil', r'巴西', r'聖保羅'],
+    'singapore': [r'singapore', r'\.sg\b', r'Singapore', r'新加坡', r'星加坡'],
+    'south korea': [r'korea', r'seoul', r'\.kr\b', r'korean', r'Korea', r'韩国', r'首爾'],
+    'turkey': [r'turkey', r'istanbul', r'\.tr\b', r'Turkiye', r'土耳其', r'伊斯坦布尔'],
+    'taiwan': [r'taiwan', r'taipei', r'\.tw\b', r'Taiwan', r'台湾', r'台北'],
+    'switzerland': [r'switzerland', r'zurich', r'\.ch\b', r'Schweiz', r'瑞士', r'蘇黎世'],
+    'india': [r'india', r'mumbai', r'\.in\b', r'भारत', r'India', r'India', r'印度', r'孟買'],
+    'canada': [r'canada', r'toronto', r'\.ca\b', r'Canada', r'Canada', r'加拿大', r'多倫多'],
+    'australia': [r'australia', r'sydney', r'\.au\b', r'Australia', r'Australia', r'澳洲', r'悉尼'],
+    'china': [r'china', r'beijing', r'\.cn\b', r'中国', r'China', r'China', r'北京'],
+    'italy': [r'italy', r'rome', r'\.it\b', r'Italia', r'Italy', r'意大利', r'羅馬'],
+    'spain': [r'spain', r'madrid', r'\.es\b', r'España', r'Espagne', r'Spain', r'西班牙', r'马德里'],
+    'portugal': [r'portugal', r'lisbon', r'\.pt\b', r'Portugal', r'Portugal', r'葡萄牙', r'里斯本'],
+    'norway': [r'norway', r'oslo', r'\.no\b', r'Norge', r'Norway', r'Norway', r'挪威', r'奥斯陆'],
+    'finland': [r'finland', r'helsinki', r'\.fi\b', r'Suomi', r'Finland', r'Finland', r'芬兰', r'赫尔辛基'],
+    'denmark': [r'denmark', r'copenhagen', r'\.dk\b', r'Danmark', r'Denmark', r'Denmark', r'丹麦', r'哥本哈根'],
+    'poland': [r'poland', r'warsaw', r'\.pl\b', r'Polska', r'Poland', r'Poland', r'波兰', r'华沙'],
+    'ukraine': [r'ukraine', r'kyiv', r'\.ua\b', r'Україна', r'Ukraine', r'Ukraine', r'乌克兰', r'基辅'],
+    'belarus': [r'belarus', r'minsk', r'\.by\b', r'Беларусь', r'Belarus', r'Belarus', r'白俄罗斯', r'明Ск'],
+    'indonesia': [r'indonesia', r'jakarta', r'\.id\b', r'Indonesia', r'Indonesia', r'印度尼西亚', r'雅加达'],
+    'malaysia': [r'malaysia', r'kuala lumpur', r'\.my\b', r'Malaysia', r'Malaysia', r'马来西亚', r'吉隆坡'],
+    'philippines': [r'philippines', r'manila', r'\.ph\b', r'Philippines', r'Philippines', r'菲律宾', r'马尼ла'],
+    'vietnam': [r'vietnam', r'hanoi', r'\.vn\b', r'Việt Nam', r'Vietnam', r'Vietnam', r'越南', r'河内'],
+    'thailand': [r'thailand', r'bangkok', r'\.th\b', r'Thailand', r'Thailand', r'ไทย', r'泰国', r'曼谷'],
+    'czech republic': [r'czech', r'prague', r'\.cz\b', r'Česko', r'Czech', r'Czech', r'捷克', r'布拉格'],
+    'romania': [r'romania', r'bucharest', r'\.ro\b', r'România', r'Romania', r'Romania', r'罗马尼亚', r'布加勒斯特'],
+    'hungary': [r'hungary', r'budapest', r'\.hu\b', r'Magyarország', r'Hungary', r'Hungary', r'匈牙利', r'布达佩斯'],
+    'greece': [r'greece', r'athens', r'\.gr\b', r'Ελλάδα', r'Greece', r'Greece', r'希腊', r'雅典'],
+    'bulgaria': [r'bulgaria', r'sofia', r'\.bg\b', r'България', r'Bulgaria', r'Bulgaria', r'保加利亚', r'索非亚'],
+    'egypt': [r'egypt', r'cairo', r'\.eg\b', r'مصر', r'Egypt', r'Egypt', r'埃及', r'开罗'],
+    'nigeria': [r'nigeria', r'abuja', r'\.ng\b', r'Nigeria', r'Nigeria', r'尼日利亚', r'阿布贾'],
+    'kenya': [r'kenya', r'nairobi', r'\.ke\b', r'Kenya', r'Kenya', r'肯尼亚', r'内罗毕'],
+    'colombia': [r'colombia', r'bogota', r'\.co\b', r'Colombia', r'Colombia', r'哥伦比亚', r'波哥大'],
+    'peru': [r'peru', r'lima', r'\.pe\b', r'Perú', r'Peru', r'Peru', r'秘鲁', r'利马'],
+    'chile': [r'chile', r'santiago', r'\.cl\b', r'Chile', r'Chile', r'智利', r'圣地亚哥'],
+    'venezuela': [r'venezuela', r'caracas', r'\.ve\b', r'Venezuela', r'Venezuela', r'委内瑞拉', r'加拉加斯'],
+    'austria': [r'austria', r'vienna', r'\.at\b', r'Österreich', r'Austria', r'Austria', r'奥地利', r'维也纳'],
+    'belgium': [r'belgium', r'brussels', r'\.be\b', r'België', r'Belgium', r'Belgium', r'比利时', r'布鲁塞尔'],
+    'ireland': [r'ireland', r'dublin', r'\.ie\b', r'Éire', r'Ireland', r'Ireland', r'爱尔兰', r'都柏林'],
+    'algeria': [r'algeria', r'algiers', r'\.dz\b', r'الجزائر', r'Algeria', r'Algeria', r'阿尔及利亚'],
+    'angola': [r'angola', r'luanda', r'\.ao\b', r'Angola', r'Angola', r'安哥拉'],
+    'bangladesh': [r'bangladesh', r'dhaka', r'\.bd\b', r'Bangladesh', r'Bangladesh', r'孟加拉'],
+    'cambodia': [r'cambodia', r'phnom penh', r'\.kh\b', r'Cambodge', r'Cambodia', r'Cambodia', r'柬埔寨'],
+    'costa rica': [r'costa rica', r'san jose', r'\.cr\b', r'Costa Rica', r'Costa Rica', r'哥斯达黎加'],
+    'croatia': [r'croatia', r'zagreb', r'\.hr\b', r'Hrvatska', r'Croatia', r'Croatia', r'克罗地亚'],
+    'cuba': [r'cuba', r'havana', r'\.cu\b', r'Cuba', r'Cuba', r'古巴'],
+    'estonia': [r'estonia', r'tallinn', r'\.ee\b', r'Eesti', r'Estland', r'эстония', r'爱沙尼亚'],  # Эстония - часть Прибалтики
+    'georgia': [r'georgia', r'tbilisi', r'\.ge\b', r'Sakartvelo', r'Georgia', r'Georgia', r'格鲁吉亚'],
+    'ghana': [r'ghana', r'accra', r'\.gh\b', r'Ghana', r'Ghana', r'加纳'],
+    'iran': [r'iran', r'tehran', r'\.ir\b', r'Iran', r'ایران', r'Iran', r'伊朗'],
+    'jordan': [r'jordan', r'amman', r'\.jo\b', r'Urdun', r'Jordan', r'Jordan', r'约旦'],
+    'kazakhstan': [r'kazakhstan', r'astana', r'almaty', r'\.kz\b', r'Kazakhstan', r'Kazakhstan', r'哈萨克斯坦'],
+    'kuwait': [r'kuwait', r'kuwait city', r'\.kw\b', r'Al Kuwayt', r'Kuwait', r'Kuwait', r'科威特'],
+    'lebanon': [r'lebanon', r'beirut', r'\.lb\b', r'Lubnān', r'Lebanon', r'Lebanon', r'黎巴嫩'],
+    'libya': [r'libya', r'tripoli', r'\.ly\b', r'Libiya', r'Libya', r'Libya', r'利比亚'],
+    'morocco': [r'morocco', r'rabat', r'\.ma\b', r'Maghrib', r'Morocco', r'Morocco', r'摩洛哥'],
+    'nepal': [r'nepal', r'kathmandu', r'\.np\b', r'Nepal', r'Nepal', r'尼泊尔'],
+    'oman': [r'oman', r'muscat', r'\.om\b', r'Oman', r'Oman', r'阿曼'],
+    'pakistan': [r'pakistan', r'islamabad', r'\.pk\b', r'Pakistan', r'Pakistan', r'巴基斯坦'],
+    'qatar': [r'qatar', r'doha', r'\.qa\b', r'Qatar', r'Qatar', r'卡塔尔'],
+    'serbia': [r'serbia', r'belgrade', r'\.rs\b', r'Srbija', r'Serbia', r'Serbia', r'塞尔вия'],
+    'slovakia': [r'slovakia', r'bratislava', r'\.sk\b', r'Slovensko', r'Slovakia', r'Slovakia', r'斯洛伐克'],
+    'slovenia': [r'slovenia', r'ljubljana', r'\.si\b', r'Slovenija', r'Slovenia', r'Slovenia', r'斯洛文尼亚'],
+    'sudan': [r'sudan', r'khartoum', r'\.sd\b', r'Sudan', r'Sudan', r'苏丹'],
+    'syria': [r'syria', r'damascus', r'\.sy\b', r'Suriyah', r'Syria', r'Syria', r'叙利亚'],
+    'tunisia': [r'tunisia', r'tunis', r'\.tn\b', r'Tunis', r'Tunisia', r'Tunisia', r'突尼斯'],
+    'uruguay': [r'uruguay', r'montevideo', r'\.uy\b', r'Uruguay', r'Uruguay', r'乌拉圭'],
+    'uzbekistan': [r'uzbekistan', r'tashkent', r'\.uz\b', r'Oʻzbekiston', r'Uzbekistan', r'Uzbekistan', r'乌兹бекистан'],
+    'yemen': [r'yemen', r'sanaa', r'\.ye\b', r'Yaman', r'Yemen', r'Yemen', r'也门'],
+    'latvia': [  # Латвия - часть Прибалтики
+        r'latvia', 
+        r'rīga', 
+        r'\.lv\b', 
+        r'latvija', 
+        r'拉脱维亚', 
+        r'里加',
+        r'рига', 
+        r'рига'
+    ],
+    'lithuania': [  # Литва - часть Прибалтики
+        r'lithuania', 
+        r'vilnius', 
+        r'\.lt\b', 
+        r'lietuva', 
+        r'立陶宛', 
+        r'维尔纽斯',
+        r'вильнюс', 
+        r'вильнюс'
+    ]
+}
+
+# Инструкции для каждой страны
+COUNTRY_INSTRUCTIONS = {
+    "russia": "Инструкция по настройке для России: Для подключения к серверам в России используйте любой из предложенных конфигов. Рекомендуется использовать протоколы VLESS или VMess для максимальной скорости.",
+    "united states": "Инструкция по настройке для США: Выберите конфигурацию с высокой скоростью. Для стабильного соединения рекомендуется использовать протокол Trojan.",
+    "germany": "Инструкция по настройке для Германии: Используйте конфиги с пометкой Frankfurt для наилучшей скорости. Рекомендуется протокол VLESS с шифрованием xtls-rprx-direct.",
+    "japan": "Инструкция по настройке для Японии: Для игр рекомендуется использовать конфиги с низкой задержкой (ping ниже 80ms). Протоколы VMess и VLESS обеспечивают наилучшую производительность.",
+    "france": "Инструкция по настройке для Франции: Выберите конфигурацию с пометкой Paris для наилучшего качества соединения. Поддерживается большинство современных протоколов.",
+    "united kingdom": "Инструкция по настройке для Великобритании: Для просмотра британского контента (BBC и др.) используйте конфиги с пометкой London. Рекомендуется протокол VLESS.",
+    "singapore": "Инструкция по настройке для Сингапура: Отличный выбор для подключения к азиатским серверам. Для игр рекомендуется использовать конфиги с низкой задержкой.",
+    "netherlands": "Инструкция по настройке для Нидерландов: Широко используется для обхода ограничений. Рекомендуется протокол Trojan для максимальной стабильности.",
+    "canada": "Инструкция по настройке для Канады: Отличный выбор для доступа к американскому и канадскому контенту. Используйте конфиги с пометкой Toronto.",
+    "switzerland": "Инструкция по настройке для Швейцарии: Известна стабильностью соединения. Рекомендуется протокол VLESS для максимальной скорости.",
+    "sweden": "Инструкция по настройке для Швеции: Хороший выбор для европейского контента. Используйте конфиги с пометкой Stockholm.",
+    "australia": "Инструкция по настройке для Австралии: Для доступа к австралийскому контенту. Рекомендуется использовать конфиги с пометкой Sydney.",
+    "brazil": "Инструкция по настройке для Бразилии: Используйте конфиги с пометкой Sao Paulo для наилучшей скорости. Подходит для локального контента.",
+    "india": "Инструкция по настройке для Индии: Для доступа к индийскому контенту. Используйте конфиги с пометкой Mumbai.",
+    "south korea": "Инструкция по настройке для Южной Кореи: Отличный выбор для игр и корейского контента. Рекомендуется использовать конфиги с низкой задержкой.",
+    "turkey": "Инструкция по настройке для Турции: Для доступа к турецкому контенту. Используйте конфиги с пометкой Istanbul.",
+    "taiwan": "Инструкция по настройке для Тайваня: Для доступа к азиатскому контенту. Рекомендуется протокол VMess для максимальной скорости.",
+    "south africa": "Инструкция по настройке для Южной Африки: Для доступа к локальному контенту. Используйте конфиги с пометкой Johannesburg.",
+    "united arab emirates": "Инструкция по настройке для ОАЭ: Для доступа к ближневосточному контенту. Используйте конфиги с пометкой Dubai.",
+    "saudi arabia": "Инструкция по настройке для Саудовской Аравии: Для доступа к локальному контенту. Используйте конфиги с пометкой Riyadh.",
+    "israel": "Инструкция по настройке для Израиля: Для доступа к израильскому контенту. Используйте конфиги с пометкой Tel Aviv.",
+    "mexico": "Инструкция по настройке для Мексики: Для доступа к латиноамериканскому контенту. Используйте конфиги с пометкой Mexico City.",
+    "argentina": "Инструкция по настройке для Аргентины: Для доступа к южноамериканскому контенту. Используйте конфиги с пометкой Buenos Aires.",
+    "italy": "Инструкция по настройке для Италии: Для доступа к европейскому контенту. Используйте конфиги с пометкой Rome.",
+    "spain": "Инструкция по настройке для Испании: Для доступа к испанскому контенту. Используйте конфиги с пометкой Madrid.",
+    "portugal": "Инструкция по настройке для Португалии: Для доступа к португальскому контенту. Используйте конфиги с пометкой Lisbon.",
+    "norway": "Инструкция по настройке для Норвегии: Для доступа к скандинавскому контенту. Используйте конфиги с пометкой Oslo.",
+    "finland": "Инструкция по настройке для Финляндии: Для доступа к скандинавскому контенту. Используйте конфиги с пометкой Helsinki.",
+    "denmark": "Инструкция по настройке для Дании: Для доступа к скандинавскому контенту. Используйте конфиги с пометкой Copenhagen.",
+    "poland": "Инструкция по настройке для Польши: Для доступа к восточноевропейскому контенту. Используйте конфиги с пометкой Warsaw.",
+    "ukraine": "Инструкция по настройке для Украины: Для доступа к украинскому контенту. Используйте конфиги с пометкой Kyiv.",
+    "belarus": "Инструкция по настройке для Беларуси: Для доступа к белорусскому контенту. Используйте конфиги с пометкой Minsk.",
+    "china": "Инструкция по настройке для Китая: Для доступа к китайскому контенту. Используйте конфиги с пометкой Beijing.",
+    "indonesia": "Инструкция по настройке для Индонезии: Для доступа к индонезийскому контенту. Используйте конфиги с пометкой Jakarta.",
+    "malaysia": "Инструкция по настройке для Малайзии: Для доступа к малазийскому контенту. Используйте конфиги с пометкой Kuala Lumpur.",
+    "philippines": "Инструкция по настройке для Филиппин: Для доступа к филиппинскому контенту. Используйте конфиги с пометкой Manila.",
+    "vietnam": "Инструкция по настройке для Вьетнама: Для доступа к вьетнамскому контенту. Используйте конфиги с пометкой Hanoi.",
+    "thailand": "Инструкция по настройке для Таиланда: Для доступа к тайскому контенту. Используйте конфиги с пометкой Bangkok.",
+    "czech republic": "Инструкция по настройке для Чехии: Для доступа к чешскому контенту. Используйте конфиги с пометкой Prague.",
+    "romania": "Инструкция по настройке для Румынии: Для доступа к румынскому контенту. Используйте конфиги с пометкой Bucharest.",
+    "hungary": "Инструкция по настройке для Венгрии: Для доступа к венгерскому контенту. Используйте конфиги с пометкой Budapest.",
+    "greece": "Инструкция по настройке для Греции: Для доступа к греческому контенту. Используйте конфиги с пометкой Athens.",
+    "bulgaria": "Инструкция по настройке для Болгарии: Для доступа к болгарскому контенту. Используйте конфиги с пометкой Sofia.",
+    "egypt": "Инструкция по настройке для Египта: Для доступа к египетскому контенту. Используйте конфиги с пометкой Cairo.",
+    "nigeria": "Инструкция по настройке для Нигерии: Для доступа к нигерийскому контенту. Используйте конфиги с пометкой Abuja.",
+    "kenya": "Инструкция по настройке для Кении: Для доступа к кенийскому контенту. Используйте конфиги с пометкой Nairobi.",
+    "colombia": "Инструкция по настройке для Колумбии: Для доступа к колумбийскому контенту. Используйте конфиги с пометкой Bogota.",
+    "peru": "Инструкция по настройке для Перу: Для доступа к перуанскому контенту. Используйте конфиги с пометкой Lima.",
+    "chile": "Инструкция по настройке для Чили: Для доступа к чилийскому контенту. Используйте конфиги с пометкой Santiago.",
+    "venezuela": "Инструкция по настройке для Венесуэлы: Для доступа к венесуэльскому контенту. Используйте конфиги с пометкой Caracas.",
+    "austria": "Инструкция по настройке для Австрии: Для доступа к австрийскому контенту. Используйте конфиги с пометкой Vienna.",
+    "belgium": "Инструкция по настройке для Бельгии: Для доступа к бельгийскому контенту. Используйте конфиги с пометкой Brussels.",
+    "ireland": "Инструкция по настройке для Ирландии: Для доступа к ирландскому контенту. Используйте конфиги с пометкой Dublin.",
+    "algeria": "Инструкция по настройке для Алжира: Для доступа к алжирскому контенту. Используйте конфиги с пометкой Algiers.",
+    "angola": "Инструкция по настройке для Анголы: Для доступа к ангольскому контенту. Используйте конфиги с пометкой Luanda.",
+    "bangladesh": "Инструкция по настройке для Бангладеша: Для доступа к бангладешскому контенту. Используйте конфиги с пометкой Dhaka.",
+    "cambodia": "Инструкция по настройке для Камбоджи: Для доступа к камбоджийскому контенту. Используйте конфиги с пометкой Phnom Penh.",
+    "costa rica": "Инструкция по настройке для Коста-Рики: Для доступа к коста-риканскому контенту. Используйте конфиги с пометкой San Jose.",
+    "croatia": "Инструкция по настройке для Хорватии: Для доступа к хорватскому контенту. Используйте конфиги с пометкой Zagreb.",
+    "cuba": "Инструкция по настройке для Кубы: Для доступа к кубинскому контенту. Используйте конфиги с пометкой Havana.",
+    "estonia": "Инструкция по настройке для Эстонии: Для доступа к эстонскому контенту. Используйте конфиги с пометкой Tallinn.",  # Эстония - часть Прибалтики
+    "georgia": "Инструкция по настройке для Грузии: Для доступа к грузинскому контенту. Используйте конфиги с пометкой Tbilisi.",
+    "ghana": "Инструкция по настройке для Ганы: Для доступа к ганскому контенту. Используйте конфиги с пометкой Accra.",
+    "iran": "Инструкция по настройке для Ирана: Для доступа к иранскому контенту. Используйте конфиги с пометкой Tehran.",
+    "jordan": "Инструкция по настройке для Иордании: Для доступа к иорданскому контенту. Используйте конфиги с пометкой Amman.",
+    "kazakhstan": "Инструкция по настройке для Казахстана: Для доступа к казахстанскому контенту. Используйте конфиги с пометкой Astana.",
+    "kuwait": "Инструкция по настройке для Кувейта: Для доступа к кувейтскому контенту. Используйте конфиги с пометкой Kuwait City.",
+    "lebanon": "Инструкция по настройке для Ливана: Для доступа к ливанскому контенту. Используйте конфиги с пометкой Beirut.",
+    "libya": "Инструкция по настройке для Ливии: Для доступа к ливийскому контенту. Используйте конфиги с пометкой Tripoli.",
+    "morocco": "Инструкция по настройке для Марокко: Для доступа к марокканскому контенту. Используйте конфиги с пометкой Rabat.",
+    "nepal": "Инструкция по настройке для Непала: Для доступа к непальскому контенту. Используйте конфиги с пометкой Kathmandu.",
+    "oman": "Инструкция по настройке для Омана: Для доступа к оманскому контенту. Используйте конфиги с пометкой Muscat.",
+    "pakistan": "Инструкция по настройке для Пакистана: Для доступа к пакистанскому контенту. Используйте конфиги с пометкой Islamabad.",
+    "qatar": "Инструкция по настройке для Катара: Для доступа к катарскому контенту. Используйте конфиги с пометкой Doha.",
+    "serbia": "Инструкция по настройке для Сербии: Для доступа к сербскому контенту. Используйте конфиги с пометкой Belgrade.",
+    "slovakia": "Инструкция по настройке для Словакии: Для доступа к словакскому контенту. Используйте конфиги с пометкой Bratislava.",
+    "slovenia": "Инструкция по настройке для Словении: Для доступа к словенскому контенту. Используйте конфиги с пометкой Ljubljana.",
+    "sudan": "Инструкция по настройке для Судана: Для доступа к суданскому контенту. Используйте конфиги с пометкой Khartoum.",
+    "syria": "Инструкция по настройке для Сирии: Для доступа к сирийскому контенту. Используйте конфиги с пометкой Damascus.",
+    "tunisia": "Инструкция по настройке для Туниса: Для доступа к тунисскому контенту. Используйте конфиги с пометкой Tunis.",
+    "uruguay": "Инструкция по настройке для Уругвая: Для доступа к уругвайскому контенту. Используйте конфиги с пометкой Montevideo.",
+    "uzbekistan": "Инструкция по настройке для Узбекистана: Для доступа к узбекскому контенту. Используйте конфиги с пометкой Tashkent.",
+    "yemen": "Инструкция по настройке для Йемена: Для доступа к йеменскому контенту. Используйте конфиги с пометкой Sanaa.",
+    "latvia": "Инструкция по настройке для Латвии: Для доступа к латвийскому контенту. Используйте конфиги с пометкой Rīga.",  # Латвия - часть Прибалтики
+    "lithuania": "Инструкция по настройке для Литвы: Для доступа к литовскому контенту. Используйте конфиги с пометкой Vilnius."  # Литва - часть Прибалтики
+}
+
+# Дополнительные данные о странах
+COUNTRY_DETAILS = {
+    "russia": {
+        "official_name": "Российская Федерация",
+        "capital": "Москва",
+        "continent": "Европа/Азия"
+    },
+    "united states": {
+        "official_name": "Соединенные Штаты Америки",
+        "capital": "Вашингтон",
+        "continent": "Северная Америка"
+    },
+    # Добавьте детали для других стран при необходимости
+    "latvia": {
+        "official_name": "Латвийская Республика",
+        "capital": "Рига",
+        "continent": "Европа",
+        "flag_description": "Трехцветный флаг с красным вверху, узкой белой полосой в середине и черным внизу."
+    },
+    "lithuania": {
+        "official_name": "Литовская Республика",
+        "capital": "Вильнюс",
+        "continent": "Европа",
+        "flag_description": "Три горизонтальные полосы: желтая (верхняя), зеленая (средняя) и красная (нижняя)."
+    },
+    "estonia": {
+        "official_name": "Эстонская Республика",
+        "capital": "Таллин",
+        "continent": "Европа",
+        "flag_description": "Три горизонтальные полосы: синяя, черная и белая"
+    }
+}
+
+def get_country_by_flag(flag_emoji: str) -> str:
+    """Получить название страны по флагу"""
+    return FLAG_COUNTRY_MAP.get(flag_emoji, None)
+
+def get_patterns_for_country(country: str) -> list:
+    """Получить паттерны для определения страны"""
+    return COUNTRY_PATTERNS.get(country.lower(), [])
+
+def get_instruction_for_country(country: str) -> str:
+    """Получить инструкцию для страны"""
+    return COUNTRY_INSTRUCTIONS.get(country.lower(), f"Инструкция по настройке для {country.title()}")
+
+def get_country_code(country: str) -> list:
+    """Получить код(ы) страны"""
+    return COUNTRY_CODES.get(country.lower(), [])
+
+def normalize_country_name(country: str) -> str:
+    """
+    Нормализация названия страны для соответствия формату в данных.
+    
+    Эта функция приводит название страны к стандартному формату,
+    который используется в словарях COUNTRY_PATTERNS и других.
+    
+    Примеры:
+    - "United States of America" -> "united states"
+    - "Russian Federation" -> "russia"
+    - "UK" -> "united kingdom"
+    - "USA" -> "united states"
+    - "Latvia" -> "latvia"
+    - "Lithuania" -> "lithuania"
+    - "Estonia" -> "estonia"
+    """
+    if not country:
+        return ""
+    
+    # Приводим к нижнему регистру и удаляем лишние пробелы
+    country = country.lower().strip()
+    
+    # Специальные случаи и синонимы
+    if country in ["usa", "america", "united states of america", "us"]:
+        return "united states"
+    elif country in ["russian federation", "ru", "rus"]:
+        return "russia"
+    elif country in ["uk", "england", "great britain"]:
+        return "united kingdom"
+    elif country in ["south korea", "korea republic"]:
+        return "south korea"
+    elif country in ["czechia", "czech"]:
+        return "czech republic"
+    
+    # Проверяем соответствие известным странам
+    for standard_name in COUNTRY_PATTERNS.keys():
+        # Если название содержит стандартное имя, возвращаем его
+        if standard_name in country:
+            return standard_name
+    
+    # Проверяем соответствие через коды стран
+    for standard_name, codes in COUNTRY_CODES.items():
+        if any(code in country for code in codes):
+            return standard_name
+    
+    # Если ничего не подошло, возвращаем исходное название в нижнем регистре
+    return country
